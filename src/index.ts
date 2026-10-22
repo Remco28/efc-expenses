@@ -409,6 +409,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const all = await allowedDays(env, tid);
     const days = b.days == null ? [...all].sort() : cleanDays(b.days, all);
     const r = await env.DB.prepare("INSERT INTO families (tournament_id, name, days) VALUES (?, ?, ?) RETURNING id").bind(tid, str(b.name), JSON.stringify(days)).first<any>();
+    // A family that joins late shares existing costs automatically, by who was
+    // there (custom splits are hand-set, so they're left alone).
+    const { results: exps } = await env.DB.prepare("SELECT id, split FROM expenses WHERE tournament_id = ? AND basis <> 'custom'").bind(tid).all<any>();
+    if (exps.length) await env.DB.batch(exps.map(e => env.DB.prepare("UPDATE expenses SET split = ? WHERE id = ?")
+      .bind(JSON.stringify({ ...JSON.parse(e.split), [r.id]: null }), e.id)));
     await log(env, tid, name, `added the ${str(b.name)} family`);
     return json({ id: r.id }, 201);
   }

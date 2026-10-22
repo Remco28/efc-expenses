@@ -30,8 +30,7 @@ test("coach travel splits equally per fencer, coach stay by fencer-days", () => 
 test("per person only counts people there that day", () => {
   assert.equal(autoUnits("person", ten[0], days[0]), 2);
   assert.equal(autoUnits("person", ten[1], days[0]), 0);
-  const lunch = { amount_cents: 6000, basis: "person", date: days[0], split: defaultSplit("person", ten, days[0]) };
-  assert.deepEqual(Object.keys(lunch.split).sort(), ["1", "4"]);
+  const lunch = { amount_cents: 6000, basis: "person", date: days[0], split: defaultSplit("person", ten) };
   assert.deepEqual(shares(lunch, ten).shares, { 1: 4000, 4: 2000 });
 });
 
@@ -83,4 +82,25 @@ test("a treasurer on the trip ends with exactly their own balance", () => {
 test("an expense with everyone unticked splits to nobody", () => {
   const e = { amount_cents: 1000, basis: "family", date: null, split: {} };
   assert.equal(shares(e, ten).total, 0);
+});
+
+test("a family added later is counted automatically, by who was there", () => {
+  const e = { amount_cents: 6000, basis: "person", date: days[0], split: defaultSplit("person", ten) };
+  const late = [...ten, fam(5, "E", [p("e", true, [days[0]], [days[0]])])];
+  // the server adds the new family to existing splits as automatic (null)
+  e.split[5] = null;
+  assert.deepEqual(shares(e, late).shares, { 1: 3000, 4: 1500, 5: 1500 });
+});
+
+test("unticking a family (0) sticks even when they were there", () => {
+  const e = { amount_cents: 6000, basis: "person", date: days[0], split: { ...defaultSplit("person", ten), 1: 0 } };
+  assert.deepEqual(shares(e, ten).shares, { 4: 6000 });
+});
+
+test("fixing someone's days later flows into the split", () => {
+  const fams = structuredClone(ten);
+  const e = { amount_cents: 6000, basis: "person", date: days[2], split: defaultSplit("person", fams) };
+  assert.deepEqual(Object.keys(shares(e, fams).shares).sort(), ["2", "4"]);
+  fams[0].people[1].days.push(days[2]);           // A's parent was actually there day 3
+  assert.deepEqual(Object.keys(shares(e, fams).shares).sort(), ["1", "2", "4"]);
 });

@@ -683,13 +683,11 @@ function renderEditor(id) {
   if (id && !e) { location.hash = `#/t/${t.id}`; return; }
   if (!S.draft || S.draft.id !== (id || 0)) {
     const me = myFamily();
-    const split = e ? Object.fromEntries(Object.entries(e.split).filter(([id, v]) => {
-      const fam = families.find(x => x.id === Number(id));
-      return fam && (v != null || autoUnits(e.basis, fam, e.date) > 0);
-    })) : {};
+    // Families added since this expense was entered count automatically too.
+    const split = e ? { ...Object.fromEntries(families.map(f => [f.id, e.basis === "custom" ? 0 : null])), ...e.split } : {};
     S.draft = e ? { ...e, split, amount: (e.amount_cents / 100).toFixed(2), basisTouched: true }
       : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "person", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, basisTouched: false };
-    if (!e) S.draft.split = defaultSplit("person", families, null);
+    if (!e) S.draft.split = defaultSplit("person", families);
   }
   const d = S.draft;
   const days = tournamentDays(t.start_date, t.end_date);
@@ -752,7 +750,7 @@ function renderExpenseView(e) {
 function markPaid() {
   document.querySelectorAll("#paid [data-fam]").forEach(b => { const on = Number(b.dataset.fam) === Number(S.draft.paid_by); b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
 }
-function resetSplit() { S.draft.split = defaultSplit(S.draft.basis, S.trip.families, S.draft.date); drawSplit(); }
+function resetSplit() { S.draft.split = defaultSplit(S.draft.basis, S.trip.families); drawSplit(); }
 function cents(v) { const n = Math.round(parseFloat(String(v).replace(/[$,\s]/g, "")) * 100); return Number.isFinite(n) ? n : 0; }
 
 function drawSplit() {
@@ -766,12 +764,14 @@ function drawSplit() {
   const s = shares({ ...d, amount_cents: amount }, families);
   const unit = n => plural(n, BASES[d.basis].unit, BASES[d.basis].units);
   el.innerHTML = `<div class="incl">${families.map(f => {
-    const inc = String(f.id) in d.split, set = d.split[f.id], auto = autoUnits(d.basis, f, d.date);
+    const set = d.split[f.id], auto = autoUnits(d.basis, f, d.date);
+    const away = set == null && !auto && String(f.id) in d.split;    // automatic, but nobody there
+    const inc = String(f.id) in d.split && set !== 0 && !away;
     const n = s.units[f.id] || 0;
     return `<div class="r ${inc && n ? "" : "off"}"><input type="checkbox" data-inc="${f.id}" ${inc ? "checked" : ""} aria-label="Include the ${esc(f.name)} family">
       <span class="nm">${esc(f.name)}</span>
-      <input type="number" min="0" step="1" inputmode="numeric" data-units="${f.id}" value="${set ?? ""}" placeholder="${d.basis === "custom" ? "0" : auto}" ${inc ? "" : "disabled"} aria-label="${esc(BASES[d.basis].units)} for ${esc(f.name)}">
-      <span class="amt">${!inc ? `<span class="faint small">${!auto && d.date && (d.basis === "person" || d.basis === "family") ? "Not there that day" : "Not sharing"}</span>` : n && amount ? money(s.shares[f.id]) : "—"}</span></div>`;
+      <input type="number" min="0" step="1" inputmode="numeric" data-units="${f.id}" value="${inc ? set ?? "" : ""}" placeholder="${d.basis === "custom" ? "0" : auto}" ${inc ? "" : "disabled"} aria-label="${esc(BASES[d.basis].units)} for ${esc(f.name)}">
+      <span class="amt">${!inc ? `<span class="faint small">${away ? (d.date ? "Not there that day" : "Nobody counts") : "Not sharing"}</span>` : n && amount ? money(s.shares[f.id]) : "—"}</span></div>`;
   }).join("")}<div class="tot"><span>${unit(s.total)}</span><span>${s.total && amount ? `${money(Math.round(amount / s.total))} each` : ""}</span></div></div>`;
   const dayNote = document.getElementById("daynote");
   if (dayNote) dayNote.textContent = d.basis === "fencer" || d.basis === "fencer_day"
@@ -790,8 +790,9 @@ function drawSplit() {
     const c = ev.target.closest("[data-inc]");
     if (!c) return;
     const f = families.find(x => x.id === Number(c.dataset.inc));
-    // Ticking a family the trip says wasn't there would count 0 and look broken; start it at 1.
-    if (c.checked) d.split[c.dataset.inc] = d.basis === "custom" || !autoUnits(d.basis, f, d.date) ? 1 : null; else delete d.split[c.dataset.inc];
+    // Ticking a family nobody marked as there would count 0 and look broken, so
+    // start it at 1. Unticking stores 0: a deliberate "not sharing" that sticks.
+    if (c.checked) d.split[c.dataset.inc] = d.basis === "custom" || !autoUnits(d.basis, f, d.date) ? 1 : null; else d.split[c.dataset.inc] = 0;
     drawSplit();
     el.querySelector(`[data-${c.checked ? "units" : "inc"}="${c.dataset.inc}"]`)?.focus();
   };
@@ -864,7 +865,7 @@ function fillFromReceipt(f) {
   if (f.vendor && !d.vendor) { d.vendor = f.vendor; $("vend").value = d.vendor; }
   if (f.category && CATEGORIES[f.category]) { d.category = f.category; $("cat").value = f.category; if (!d.basisTouched) d.basis = CATEGORIES[f.category].basis; }
   if (f.date && days.includes(f.date)) { d.date = f.date; $("day").value = f.date; }
-  d.split = defaultSplit(d.basis, S.trip.families, d.date);
+  d.split = defaultSplit(d.basis, S.trip.families);
   const out = f.date && !days.includes(f.date) ? ` The receipt is dated ${f.date}, which is outside the trip.` : "";
   d.aiNote = `We filled in the form from the receipt. Check the amount and who's included before saving.${out}${f.notes ? " Note: " + f.notes : ""}`;
   drawSplit();

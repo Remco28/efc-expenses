@@ -109,3 +109,19 @@ App findings went 20, then 6, then 6, then 2 (round 4, app only). Every task has
 - Adding a CSS rule for one screen that silently hits another (the column-hiding rule hid amounts in a different table). After any small-screen rule, check every table.
 - Treating "the numbers add up" as "auditable". Show the basis.
 - Forgetting that wrangler d1 create and r2 bucket create append a remote:true binding to wrangler.jsonc.
+
+## Round 5: family screens at scale, 2026-10-22
+Cast: 6 readers, all claude-haiku-5-5. 5 parent personas (Dana, organizer, adds a 4-person family with a one-day dad; Walter, 72, adds his own family; Sean, impatient dad, wife leaves mid-week; Rachel, accountant, cross-checks a day; Grace, large text) plus 1 accessibility specialist. Trip: 15 families, 37 people, 7 days.
+Outcome: every task passed. Check a day and the expense splits agreed exactly (Rachel). Kate's early departure cut the Murphy share by $44.07 (Sean).
+
+Tier 1 (fixed):
+1. **Families added after expenses weren't in them** (Walter; reproduced). Brooks showed "$0.00, even" despite Sunday dinner. Root cause: splits stored a fixed family list at entry time, so new families and corrected days never reached old expenses. Now every expense covers every family on "automatic" (who was there decides); only deliberate choices are stored (a hand-set count, or 0 for unticked); a new family is added to existing splits automatically. Three new unit tests cover this, and an end-to-end check shows Brooks counted Sunday, not Thursday, owing $191.03, nets 0.
+2. Quick taps on day buttons overwrote each other (Sean; Walter likely hit the same). Saves now queue, and each tap sends the row as shown.
+3. Editing an old expense showed absent families as ticked (Rachel). Rows on automatic with nobody there now read "Not there that day", unticked.
+4. Day buttons' on/off state only shown by colour (Dana, Walter): a "Selected: Fri 2–Sun 4" line now sits above each row.
+5. Focus lost after "Different days?" and "Use the family's days again" (accessibility): it now lands on that person's own days, or their name field.
+6. Day rows unnamed for screen readers (accessibility): each row is now a named group ("Liam fences on").
+7. Name fields squeezed to "Etha" at large text (Grace): they now wrap onto their own line.
+Tier 0: "Add a person does nothing" (accessibility). I was editing the save code while that reader ran; it works on current code (4 people to 5, focus back on the field).
+Housekeeping: readers wrote screenshots into the agent-office repo root and left a find / running; both cleaned up. Future briefs should repeat the screenshot path rule more forcefully.
+Believed, and wrong: "storing the families on an expense at the time it's entered is fine." It froze the split against every later change.

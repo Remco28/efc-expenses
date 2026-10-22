@@ -46,12 +46,12 @@ export function autoUnits(basis, family, date) {
   }
 }
 
-// The split a new expense starts with: every family that counts for it.
-export function defaultSplit(basis, families, date) {
+// The split a new expense starts with. Every family is on "automatic" (null):
+// who was there decides, so later changes to families or days flow through.
+// A hand-set number overrides it, and 0 means deliberately not sharing.
+export function defaultSplit(basis, families) {
   const split = {};
-  for (const f of families) {
-    if (basis === "custom" ? true : autoUnits(basis, f, date) > 0) split[f.id] = basis === "custom" ? 1 : null;
-  }
+  for (const f of families) split[f.id] = basis === "custom" ? 1 : null;
   return split;
 }
 
