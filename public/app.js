@@ -214,6 +214,7 @@ async function show() {
     renderHome();
     if (!load("efc-tour-seen")) showTour();
   } catch (e) {
+    if (stale()) return;                    // an abandoned page's error isn't news
     if (e instanceof AuthError) return renderLogin();
     app.innerHTML = `${bar({ title: "EFC Trip Expenses" })}<div class="wrap"><div class="card empty"><b>Couldn't load this page</b>${esc(e.message)}<div class="row-actions"><a class="btn btn-ghost" href="#/">Back to all trips</a></div></div></div>`;
   }
@@ -221,7 +222,11 @@ async function show() {
 
 async function loadTrip(id) { S.trip = await api(`/tournaments/${id}`); }
 const tabNow = () => new URLSearchParams(location.hash.split("?")[1] || "").get("tab") || "expenses";
-async function refresh(tab = tabNow()) { const f = focusKey(); await loadTrip(S.trip.tournament.id); renderTrip(tab, f); }
+async function refresh(tab = tabNow()) {
+  const f = focusKey(), seq = routeSeq;
+  await loadTrip(S.trip.tournament.id);
+  if (seq === routeSeq) renderTrip(tab, f);   // not if they've moved to another screen meanwhile
+}
 
 function bar({ back, title, sub, right = "" }) {
   return `<header class="bar"><div class="bar-in">
@@ -683,14 +688,15 @@ async function pickStaff() {
 
 // Every change on the Manage family screen saves immediately. Saves run one
 // after another (quick taps queue up), and the screen redraws once they're done.
-let famQueue = Promise.resolve(), famPending = 0;
+let famQueue = Promise.resolve(), famPending = 0, famFailed = false;
 function famSave(fid, call, msg = "Saved", focusAfter) {
   const st = () => document.getElementById("savestate");
   if (st()) st().textContent = "Saving…";
   famPending++;
-  famQueue = famQueue.then(() => act(call)).catch(() => {}).then(async () => {
+  famQueue = famQueue.then(() => act(call)).catch(() => { famFailed = true; }).then(async () => {
    try {
     if (--famPending) return;
+    const failed = famFailed; famFailed = false;
     // If they've already left this screen (tapped Done or Back while a save was
     // still going), don't drag them back: the new screen loads fresh data itself.
     const here = () => location.hash.startsWith(`#/t/${S.trip.tournament.id}/f/${fid}`);
@@ -700,6 +706,7 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
     // survives the redraw.
     const keepIds = ["newname", "fam-name", "fam-pay", "st-name", "st-role"];
     const typed = Object.fromEntries(keepIds.map(id => [id, document.getElementById(id)]).filter(([, el]) => el && el.value !== el.defaultValue).map(([id, el]) => [id, el.value]));
+    const fencerTicked = document.getElementById("newfencer")?.checked;
     const act0 = document.activeElement;
     const typedName = act0?.dataset?.pname && act0.value !== act0.defaultValue ? [act0.dataset.pname, act0.value] : null;
     await loadTrip(S.trip.tournament.id);
@@ -707,7 +714,9 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
     renderFamily(fid, f);
     for (const [id, v] of Object.entries(typed)) { const el = document.getElementById(id); if (el) el.value = v; }
     if (typedName) { const el = document.querySelector(`[data-pname="${typedName[0]}"]`); if (el) el.value = typedName[1]; }
-    if (st()) { st().textContent = `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
+    if (fencerTicked && document.getElementById("newfencer")) document.getElementById("newfencer").checked = true;
+    // A failed save already said why in a toast; the redraw shows what really stuck.
+    if (st()) { st().textContent = failed ? "" : `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
    } catch (e) { console.error(e); if (st()) st().textContent = ""; }     // a failed reload must not block later saves
   });
   return famQueue;
@@ -748,7 +757,10 @@ function wireFamily(f) {
     add.dataset.busy = "1"; add.querySelector("button").disabled = true;
     document.getElementById("newname").value = "";
     const fencer = document.getElementById("newfencer").checked;
-    await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: fencer } }), `${n} added`);
+    let failed = false;
+    await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: fencer } }).catch(e => { failed = true; throw e; }), `${n} added`);
+    // Not added: put back what they typed so they can try again.
+    if (failed && document.getElementById("newname")) { document.getElementById("newname").value = n; document.getElementById("newfencer").checked = fencer; }
     document.getElementById("newname")?.focus();
   };
 }
@@ -795,7 +807,7 @@ function renderEditor(id) {
     const me = myFamily();
     // Families added since this expense was entered count automatically too.
     const split = e ? { ...Object.fromEntries(families.filter(f => f.kind !== "staff").map(f => [f.id, e.basis === "custom" ? 0 : null])), ...e.split } : {};
-    S.draft = e ? { ...e, split, amount: (e.amount_cents / 100).toFixed(2), basisTouched: true, splitTouched: true, catTouched: true, dateTouched: true }
+    S.draft = e ? { ...e, split, amount: (e.amount_cents / 100).toFixed(2), basisTouched: e.basis !== CATEGORIES[e.category]?.basis || Object.values(e.split).some(v => v != null), splitTouched: true, catTouched: true, dateTouched: true }
       : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "person", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, basisTouched: false };
     if (!e) S.draft.split = defaultSplit("person", families);
   }
@@ -834,7 +846,7 @@ function renderEditor(id) {
   // Changing the day keeps the sharing as set: automatic families follow the
   // day by themselves, and unticked families or hand-set counts stay.
   $("day").onchange = () => { d.date = $("day").value || null; d.dateTouched = true; drawSplit(); };
-  $("cat").onchange = () => { d.category = $("cat").value; d.catTouched = true; if (!d.basisTouched) { d.basis = CATEGORIES[d.category].basis; resetSplit(); } };
+  $("cat").onchange = () => { d.category = $("cat").value; d.catTouched = true; if (!d.basisTouched && d.basis !== CATEGORIES[d.category].basis) { d.basis = CATEGORIES[d.category].basis; resetSplit(); } };
   $("paid").onclick = ev => { const b = ev.target.closest("[data-fam]"); if (!b) return; d.paid_by = Number(b.dataset.fam); markPaid(); drawSplit(); };
   $("basis").onclick = ev => { const b = ev.target.closest("[data-basis]"); if (!b || b.dataset.basis === d.basis) return; d.basis = b.dataset.basis; d.basisTouched = true; d.splitTouched = true; resetSplit(); };
   $("ex").onsubmit = async ev => { ev.preventDefault(); pull(); await saveExpense(); };
@@ -1255,7 +1267,7 @@ app.addEventListener("click", async ev => {
           if (x.amount_cents > held && !(await confirmSheet(`Record paying ${esc(famName(x.family_id))} ${money(x.amount_cents)}?`,
             `So far you've collected ${money(Math.max(held, 0))}, so this would come partly out of your own pocket until the others pay. That's fine if it's what you did.`, "Yes, I sent it"))) return;
         }
-        await act(() => api(`/payments/${id}`, { method: "PATCH", body: { paid: b.dataset.paid === "1" } })); return refresh("treasurer");
+        await act(() => api(`/payments/${id}`, { method: "PATCH", body: { paid: b.dataset.paid === "1", ...(x && { family_id: x.family_id, direction: x.direction, amount_cents: x.amount_cents }) } })); return refresh("treasurer");
       }
       case "export": {
         b.disabled = true; const label = b.innerHTML; b.innerHTML = `<span class="spinner"></span> Building PDF…`;
