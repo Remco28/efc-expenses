@@ -288,7 +288,8 @@ function youCard() {
       <a class="link small tap" href="#/t/${t.id}?tab=settle&open=${me.id}">How was this worked out?</a></div>`;
     return `<div class="card you">${head}
       <div class="head" style="margin:0"><div><div class="muted small">${esc(t.treasurer_name)} pays you</div><div class="big get">${money(x.amount_cents)}</div></div>${done}</div>
-      <div class="sendto"><b>How to pay you:</b> ${me.pay_notes ? esc(me.pay_notes) : `<span class="faint">not added yet</span>`} <button class="link small" data-act="pay-notes" data-id="${me.id}">${me.pay_notes ? "Edit" : "Add"}</button></div></div>`;
+      <div class="sendto"><b>How to pay you:</b> ${me.pay_notes ? esc(me.pay_notes) : `<span class="faint">not added yet</span>`} <button class="link small" data-act="pay-notes" data-id="${me.id}">${me.pay_notes ? "Edit" : "Add"}</button></div>
+      <p class="hint">${x.paid_at ? `${esc(t.treasurer_name)} marked this as sent. If it hasn't arrived, message them.` : `Nothing for you to do. ${esc(t.treasurer_name)} sends it once the other families have paid, and ticks it off here. If it doesn't arrive, message them.`}</p></div>`;
   }
   const line = r.net < 0 ? `You'd owe <b class="owe">${money(-r.net)}</b>` : r.net > 0 ? `You'd get back <b class="get">${money(r.net)}</b>` : "You'd be all square";
   return `<div class="card you">${head}<div class="muted small">If the trip ended now</div><div class="big" style="font-size:22px">${line}</div>
@@ -588,7 +589,11 @@ function drawSplit() {
   const dayNote = document.getElementById("daynote");
   if (dayNote) dayNote.textContent = d.basis === "fencer" || d.basis === "fencer_day"
     ? "For this split the day is only for the record: the cost is shared across every fencing day of the trip."
-    : d.basis === "person" || d.basis === "family" ? "Only families there on this day share the cost. Pick \"Whole trip\" if it covered more than one day." : "";
+    : d.basis === "person" || d.basis === "family" ? (() => {
+        const away = d.date ? families.filter(f => !autoUnits(d.basis, f, d.date)).map(f => f.name) : [];
+        return (away.length ? `Not there that day, so not sharing: ${away.join(", ")}. ` : "")
+          + "Only families there on this day share the cost. Pick \"Whole trip\" if it covered more than one day.";
+      })() : "";
   document.getElementById("splithint").textContent = d.basis === "custom" ? "Untick any family that isn't sharing this cost."
     : `The numbers are filled in from who's on the trip (${BASES[d.basis].units}). Type a different number to change one, or untick a family that isn't sharing this cost.`;
   document.getElementById("sum").innerHTML = amount

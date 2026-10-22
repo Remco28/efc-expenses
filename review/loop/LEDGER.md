@@ -58,3 +58,24 @@ Tier 3, not acted on: on Settle up the treasurer's card comes before your own an
 
 Predictions scored (PREDICTIONS-R2.md): fixes 2, 3, 4, 5, 7 and 9 landed as predicted. Round tier-1 count predicted 0 to 3, actual 6. "Landed and broke something adjacent" happened once, as predicted (the breakdown wording, from fix 2). The fix auditor finding a fix applied in one place and missed in another: yes, the same item.
 Believed, and wrong: "a step bar whose last step is called Settled reads as a goal." One reader took the highlighted step as the current status.
+
+## Round 3: 2026-10-22, commit a77177e
+Cast: 5 readers, all claude-haiku-5-5. Following Frank's rule, 4 of 5 are real-user parent personas. Jordan (new fencing parent, adds the coach's hotel); Raj (skeptical engineer dad, verifies every number); Marco (rushed at the venue, 90 seconds); Dolores (grandmother, large text on a small phone, 320px at 1.25 zoom); plus a fix auditor.
+Outcome: every task passed. Raj reproduced every share by hand and would pay. The fix auditor found all 6 round-2 fixes GONE.
+
+Tier 1 (fixed in this round's commit):
+1. Choosing a day silently dropped a family that wasn't there, and Marco re-ticked them, overcharging them (reproduced). Those rows now say "Not there that day".
+2. The day field does nothing for per-fencer and per-fencer-day splits, but invites a choice (Jordan and Raj: two readers). A note under the field now says so. **The policy question goes to Frank:** should a single coach-hotel night be split by that night's fencers?
+3. Large-text layout (Dolores, confirmed from her screenshots): tabs clipped (now 2x2 under 380px); the Balances column cut off (scrolls, and hides Share under 340px); the Venmo handle broken mid-word (payment details now on their own line); the toast covering payment details (moved down); step labels clipped (only the current one shows on small screens).
+4. Three status words for one state: "Settling", "Final", "Finished" (Dolores; checkable). Now "Final" everywhere ("Final · 2 of 3 paid").
+5. Tapping an expense on a final trip did nothing (Raj; checkable). Now a read-only view with the split and the receipt.
+6. The treasurer tab said "is owed" where Settle up says "keeps" (fix auditor). Aligned.
+Regressions I caused and caught while proving the fixes: the small-screen rule hiding column 2 also hid the amounts in the new expense view (now scoped to the Balances table); the h1 focus showed a ring on page load (now suppressed for programmatic focus).
+
+Tier 3, surfaced to Frank: how coach-hotel nights relate to fencing days (above); requiring receipts (Raj wants an amount source).
+
+Predictions scored (PREDICTIONS-R3.md): the large-text reader finding clipping, landed (bigger than predicted). The new-fencing-parent reader stumbling on "fencer-day": partly; the help text carried the meaning, and the real confusion was what the day field does. Raj: numbers reconcile, landed. Fix auditor: all landed, landed. Tier-1 count predicted 0 to 2, actual 6. Three rounds in a row I have underestimated; the cast change in this round (new kinds of parent) is what found new things, not leftovers.
+Believed, and wrong: "the day field is harmless on coach costs; it's just a date." Two readers read it as part of the split.
+
+## PDF (separate from the rounds)
+Rebuilt at Frank's request: navy and gold summary page (key figures, who pays what with settlement and status, every expense with receipt numbers); family statements; one framed receipt per page, with PDF receipts scaled into the same frame; page X of Y. Proven by rendering a test trip with a JPEG receipt and a 2-page PDF receipt. Three layout faults were found and fixed while doing that (a note overlapping the table, zebra rows clipping sub-lines, a lone totals row on page 2).

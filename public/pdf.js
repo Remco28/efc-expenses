@@ -152,8 +152,8 @@ export async function exportPdf(trip) {
   const isT = f => t.treasurer_name && f.id === t.treasurer_family_id;
   const settles = f => {
     const n = rows[f.id].net;
-    if (isT(f)) return n > 0 ? `Keeps ${money(n)} (treasurer)` : n < 0 ? `Adds ${money(-n)} (treasurer)` : "Even (treasurer)";
-    return !n ? "All square" : n < 0 ? `Pays the treasurer ${money(-n)}` : `Is paid ${money(n)}`;
+    if (isT(f)) return n > 0 ? `Treasurer's family: keeps ${money(n)}` : n < 0 ? `Treasurer's family: adds ${money(-n)}` : "Treasurer's family: even";
+    return !n ? "All square" : n < 0 ? `Pays the treasurer ${money(-n)}` : `Paid ${money(n)} by the treasurer`;
   };
   const status = f => {
     if (!isFinal || isT(f)) return "";
@@ -161,7 +161,7 @@ export async function exportPdf(trip) {
     if (!p) return "Nothing due";
     return p.paid_at ? `Done ${new Date(p.paid_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : "Waiting";
   };
-  section("Who pays what", "Each cost is split by what it was for, among the people it was for. Balance is what a family paid minus its share. Families that owe pay the treasurer; the treasurer pays families that are owed.");
+  section("Who pays what", `Each cost is split by what it was for, among the people it was for. Balance is what a family paid minus its share. Families that owe pay the treasurer; the treasurer pays families that are owed.${isFinal ? " Payment status is as of the print date below." : ""}`);
   table([
     { label: "Family", w: 88, f: f => f.name, bold: true, sub: f => `${f.people.length} going, ${f.people.filter(p => p.is_fencer).length} fencing` },
     { label: "Share", w: 66, align: "right", f: f => money(rows[f.id].owed) },
@@ -169,7 +169,7 @@ export async function exportPdf(trip) {
     { label: "Balance", w: 70, align: "right", f: f => (rows[f.id].net > 0 ? "+" : "") + money(rows[f.id].net), color: f => rows[f.id].net > 0 ? C.get : rows[f.id].net < 0 ? C.owe : C.ink },
     { label: "Settles by", w: 150, f: settles },
     { label: "Status", w: CW - 440, f: status, color: f => due.get(f.id)?.paid_at ? C.get : C.ink2 },
-  ], families, { totals: ["Total", money(total), money(total), "", "", ""], rowH: 22 });
+  ], families, { totals: ["Total", money(total), money(total), money(0), "", ""], rowH: 22 });
   if (t.treasurer_name) {
     need(30);
     rect(M, y - 9, CW, 24, C.goldWash);
@@ -221,6 +221,37 @@ export async function exportPdf(trip) {
       text(v, x, y - 17, { f: bold, size: 10.5, color: col, w: 94, align: i === 2 ? "right" : "left" });
     });
     y -= 44;
+  }
+
+  // Who was there and who fenced, by day: the basis for every count above.
+  {
+    const days = []; for (let d = utc(t.start_date); d <= utc(t.end_date); d.setUTCDate(d.getUTCDate() + 1)) days.push(d.toISOString().slice(0, 10));
+    const people = families.flatMap(f => f.people.map(p => ({ ...p, fam: f.name })));
+    const dayW = Math.min(46, (CW - 170) / days.length);
+    need(64 + 30 + 20 + 16 * Math.min(people.length, 4)); // title, note, header and a few rows stay together
+    section("Who was there, by day", "The basis for every count in this record. x = there that day; F = there and fenced that day (one fencer-day). Per-person costs count the people there on the cost's day; per-fencer-day costs count the F marks.");
+    const head = () => {
+      rect(M, y - 7, CW, 20, C.navy2);
+      text("FAMILY / PERSON", M + 7, y, { f: bold, size: 7, color: C.white });
+      days.forEach((d, i) => text(`${utc(d).toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" })} ${utc(d).getUTCDate()}`.toUpperCase(), M + 170 + i * dayW, y, { f: bold, size: 7, color: C.white, w: dayW, align: "center" }));
+      y -= 20;
+    };
+    // Keep the header with at least a few rows, and repeat it after a page break.
+    need(20 + 16 * Math.min(people.length, 4));
+    head();
+    people.forEach((p, i) => {
+      if (y - 16 < BOTTOM) { newPage(); head(); }
+      if (i % 2) rect(M, y - 5, CW, 16, C.zebra);
+      text(`${p.fam}: ${p.name}${p.is_fencer ? " (fencer)" : ""}`, M + 7, y, { size: 8.5, w: 160 });
+      days.forEach((d, j) => {
+        const mark = p.fencing_days.includes(d) ? "F" : p.days.includes(d) ? "x" : "-";
+        text(mark, M + 170 + j * dayW, y, { f: mark === "F" ? bold : font, size: 8.5, color: mark === "-" ? C.line : mark === "F" ? C.navy : C.ink2, w: dayW, align: "center" });
+      });
+      y -= 16;
+    });
+    y -= 8;
+    need(30);
+    for (const l of wrap("Rounding: each share is rounded to the cent, and any leftover cents go to the families with the largest fractions, so every expense adds up exactly. That's why two equal shares can differ by one cent.", font, 8, CW)) { text(l, M, y, { size: 8, color: C.grey }); y -= 10.5; }
   }
 
   // ---------- receipts: one per page, in the same frame ----------
