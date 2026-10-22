@@ -79,3 +79,33 @@ Believed, and wrong: "the day field is harmless on coach costs; it's just a date
 
 ## PDF (separate from the rounds)
 Rebuilt at Frank's request: navy and gold summary page (key figures, who pays what with settlement and status, every expense with receipt numbers); family statements; one framed receipt per page, with PDF receipts scaled into the same frame; page X of Y. Proven by rendering a test trip with a JPEG receipt and a 2-page PDF receipt. Three layout faults were found and fixed while doing that (a note overlapping the table, zebra rows clipping sub-lines, a lone totals row on page 2).
+
+## Round 4: 2026-10-22, commit 0d7a880
+Cast: 6 readers, all claude-haiku-5-5. 4 of 6 are parent personas new to the review: Dave (never used an expense app; adds gas and breakfast); Ngozi (Splitwise-using organizer; fixes attendance, judges it against a spreadsheet); Gia (16-year-old fencer doing it for Mom); Priya (work laptop, checks her family's days, adds Zelle). Plus a fix auditor and Helen (retired bookkeeper on the club board, reviewing the PDF as page images).
+Outcome: every task passed. Ngozi would recommend it over a spreadsheet. Helen: "Almost. I would file it once the basis is shown." The fix auditor found all 6 round-3 fixes GONE.
+
+Tier 1 (fixed in ed13372):
+1. A family dropped by the day choice still goes unnoticed (Marco R3, Dave R4, Ngozi R4: three readers). The Day note now names them: "Not there that day, so not sharing: Okafor, Patel."
+2. The PDF had no attendance or fencing basis, so fencer-day counts couldn't be audited from paper (Helen; checkable). Added a "Who was there, by day" table (x = there, F = fenced).
+3. The PDF had no rounding rule, so a one-cent difference looked like a plug (Helen). Added a rounding note.
+4. The PDF had no total balance (Helen). Added $0.00 as the check figure. Wording clarified: "Treasurer's family: keeps …", "Paid … by the treasurer"; payment status labelled as of the print date.
+5. When a family is owed, nothing said what happens next (Gia; checkable). Added a hint.
+While proving these I found and fixed two PDF layout faults: the basis table header orphaned from its rows, then its section title orphaned.
+
+Tier 0: Dave's "form cleared after picking the day" (couldn't reproduce; the fields persist; most likely the browser typing before the first render).
+Tier 3, for Frank: per-person shares inside a family; settling across trips; asking for the name before the access code (Priya); Helen's bookkeeping extras (sign-off, document number, settlement method and reference).
+
+Predictions scored (PREDICTIONS-R4.md): every task passes, landed. Tier-1 count 0 to 2: missed, 5 (3 of them in the PDF, whose first reviewer this was). Splitwise mom asking for scope: partly (she asked for a missing-attendance warning instead, which was a real finding). PDF reviewer calls it professional: landed, with the audit-basis finding. Fix auditor all landed: landed.
+Believed, and wrong: "a record that adds up is auditable." It adds up but couldn't be recomputed without the attendance basis.
+
+## Stopping here
+App findings went 20, then 6, then 6, then 2 (round 4, app only). Every task has passed in every round across 23 readers. What's left is tier 3 and the questions only Frank can answer (below). Per the skill, that is the hand-off point: the question is now "is this good", which is the human's.
+
+**Open for Frank:** (1) should a single coach-hotel night be split by that night's fencers, or keep pooling coach stay costs by fencing days across the trip? (2) Should receipts be required? (3) Any of the tier-3 scope ideas above.
+
+## Mistakes the next author will make (so Frank can catch them)
+- Running a round with mostly specialists or same-shaped personas. The new kinds of parent (large text, rushed, new to fencing, skeptical) found the most in later rounds. Frank's rule: mostly real parents.
+- Predicting a small tier-1 count. Every round here beat the prediction. If a prediction says "0 to 2", plan for 5.
+- Adding a CSS rule for one screen that silently hits another (the column-hiding rule hid amounts in a different table). After any small-screen rule, check every table.
+- Treating "the numbers add up" as "auditable". Show the basis.
+- Forgetting that wrangler d1 create and r2 bucket create append a remote:true binding to wrangler.jsonc.
