@@ -34,3 +34,32 @@ The main themes, and what changed:
 Checks: 17 unit tests, a 30-step API script against a fresh local copy (including two finalizes at once and two resets at once), and a browser check of the family screen.
 
 We stopped after this round. The remaining findings are matters of taste, not correctness.
+
+## Round 3, 2026-10-22
+
+Aimed at the round-2 changes, with a shared severity scale (HIGH: wrong money or lost data in realistic use, unnoticed; MEDIUM: rare timing or a visible, recoverable wrong number; LOW: abuse, edge input, annoyance). Reports are in round3/. Grok stalled with no output after 30 minutes and was stopped.
+
+| # | Finding | Reviewers (their rating) | Ours |
+|---|---|---|---|
+| 1 | New person's Fencer tick lost when a save redraws the screen | agy HIGH, opencode MEDIUM | HIGH (slow venue wifi makes the window real) |
+| 2 | Changing an existing expense's category didn't move its split method | agy HIGH | HIGH; our first fix reset hand-set splits, caught in testing and narrowed |
+| 3 | Treasurer change racing finalize; treasurer not in the fingerprint | agy HIGH, Codex MEDIUM, opencode HIGH | MEDIUM (needs two people within a second) |
+| 4 | Trip dates, family add/remove, trip delete not guarded at write time | Codex MEDIUM, opencode MEDIUM | MEDIUM |
+| 5 | Family-day change rewrote a fencing tap made meanwhile | Codex MEDIUM | MEDIUM |
+| 6 | Trip-date trim skipped people edited meanwhile | agy MEDIUM, Codex MEDIUM | MEDIUM |
+| 7 | New person got the family's old days | Codex MEDIUM | MEDIUM |
+| 8 | Removing a family rewrote a split edited meanwhile | Codex MEDIUM | MEDIUM |
+| 9 | Payment ids reused after reopen; a stale screen could tick the wrong one | Codex MEDIUM | MEDIUM |
+| 10 | Two date changes at once trimmed to different ranges | opencode MEDIUM | MEDIUM |
+| 11 | "✓ Saved" after a failed save; a failed add lost the name | agy MEDIUM, opencode MEDIUM | LOW (an error toast already shows, and the screen reloads the truth) |
+| 12 | Two practice resets could delete each other's receipt | Codex MEDIUM | LOW (practice trip only) |
+| 13 | Stale load could paint an error or the old trip | agy MEDIUM, opencode LOW | LOW |
+| 14 | Trips over 60 days couldn't be renamed | opencode LOW | LOW (none exist) |
+| 15 | Migration 0007 changed attendance on finalized trips | Codex MEDIUM | No effect: the live database had no finalized trips. Not changed |
+| – | Typing cleared the browser's "changed" flag, so edits were dropped | agy HIGH | Rejected: not reproduced in the browser |
+
+All fixed except 15. The fix pattern for 4–10: the database reads current values in the same statement that writes (json_each/json_remove in SQL), and every money-changing write checks the trip is open in that statement.
+
+Checks: 17 unit tests, the round 1–2 API scripts, a new 16-step round-3 script, and browser checks for 1 and 2 with saves slowed down.
+
+Round 3 still found HIGH issues, so a round 4 follows.

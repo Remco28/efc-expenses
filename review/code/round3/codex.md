@@ -1,0 +1,26 @@
+### [MEDIUM] Treasurer changes bypass the finalize fingerprint
+src/index.ts:401,467. Scenario: Finalization reads treasurer family A. Another phone changes the treasurer to family B before the finalize batch commits. The fingerprint excludes treasurer fields, so finalization succeeds using A. Wrong outcome: Payments omit A’s balance instead of B’s, while the trip identifies B as treasurer. The unguarded treasurer UPDATE can also land after finalization. Suggested fix: Include treasurer identity in the fingerprint and guard identity changes with `OPEN`.
+
+### [MEDIUM] Trip edits can change attendance after finalization
+src/index.ts:369. Scenario: A request shortening Friday–Sunday to Saturday–Sunday passes `openTournament` and reads attendance. Another phone finalizes before the shortening batch executes. Wrong outcome: The unguarded batch changes dates and attendance on the final trip, leaving frozen payments based on different shares. Trip deletion and family creation also lack atomic open-state guards. Suggested fix: Guard every affected statement with `OPEN` and return a conflict when the guarded write fails.
+
+### [MEDIUM] Family-day propagation overwrites concurrent fencing changes
+src/index.ts:528. Scenario: A family attends Friday–Sunday and a child fences Saturday. One phone removes Friday from family attendance and reads the child’s fencing days. Another successfully unticks Saturday before the family batch commits. Wrong outcome: Propagation writes its stale `[Saturday]` back, silently restoring a chargeable fencing day. Only the family array has compare-and-swap protection. Suggested fix: Derive fencing-day filtering from the current database value inside the batch, or compare and retry all dependent person state; apply `OPEN` to those updates too.
+
+### [MEDIUM] Date pruning silently skips changed rows
+src/index.ts:374. Scenario: A shortening request reads a Friday–Sunday fencer’s attendance and fencing arrays. Another phone removes Saturday fencing before the shortening batch commits. Wrong outcome: The person UPDATE fails its comparison and is silently skipped, leaving Friday attendance and fencing outside the new Saturday–Sunday dates. Those invisible days still affect automatic shares. Suggested fix: Filter current arrays atomically in SQL, or retry conflicts before accepting the date change.
+
+### [MEDIUM] New people can inherit obsolete family attendance
+src/index.ts:560. Scenario: Adding a person reads the family’s Saturday–Sunday attendance. A concurrent family-day change removes Sunday and finishes propagating to existing people. The new person is then inserted using the previously read days. Wrong outcome: Someone marked as following family days still attends Sunday and can receive Sunday meal or fencing charges. Suggested fix: Read inherited family days within the INSERT, or guard against the family snapshot changing and retry.
+
+### [MEDIUM] Removing a family can undo another expense edit
+src/index.ts:546. Scenario: Family B has no paid expenses and is excluded from an expense. A deletion request reads that expense’s split. Another parent saves a corrected allocation between families A and C. The deletion batch subsequently writes its older split with B removed. Wrong outcome: The successful allocation correction is silently lost. Suggested fix: Remove the family’s key from the current split in SQL, with an atomic `OPEN` guard, rather than replacing the whole saved JSON object.
+
+### [MEDIUM] Reset cleanup deletes receipts belonging to another reset
+src/index.ts:253. Scenario: Two practice resets upload their seed receipts before committing. Reset A commits and runs orphan cleanup while reset B’s uploaded receipt is still awaiting its database batch. A deletes B’s receipt because no expense references it yet; B then commits. Wrong outcome: The final practice trip references a deleted receipt. Suggested fix: Clean up only receipt keys captured from the rows being replaced, preserving uploads belonging to concurrent requests.
+
+### [MEDIUM] Reused payment IDs let stale screens mark different payments
+src/index.ts:445. Scenario: A phone keeps an old finalized checklist open. Another phone reopens the trip, changes expenses and finalizes again. Because `payments.id` is an ordinary SQLite integer primary key, deleted IDs can be reused for different families. The stale phone ticks its old payment. Wrong outcome: The replacement payment with that ID is marked paid, potentially for another family or amount. Suggested fix: Prevent payment ID reuse and reject updates to obsolete payment generations.
+
+### [MEDIUM] Migration changes finalized shares without rebuilding payments
+migrations/0007_clamp_days.sql:6. Scenario: An existing finalized trip has fencing days outside its shortened dates, and its frozen payments were calculated using those days. Migration 0007 removes the days but retains final status and payments. Wrong outcome: Expense breakdowns and balances use the corrected attendance while the payment checklist continues collecting the old amounts. Suggested fix: Identify affected finalized trips and reopen them with their payments cleared, or recalculate their payments as part of the migration.
