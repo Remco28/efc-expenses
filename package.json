@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Track and split shared costs on fencing club travel tournaments",
   "scripts": {
-    "vendor": "mkdir -p public/vendor && cp node_modules/pdf-lib/dist/pdf-lib.min.js public/vendor/",
+    "vendor": "mkdir -p public/vendor/fonts && cp node_modules/pdf-lib/dist/pdf-lib.min.js public/vendor/ && cp node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-400-normal.woff2 node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-500-normal.woff2 node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-600-normal.woff2 node_modules/@fontsource/ibm-plex-sans/files/ibm-plex-sans-latin-700-normal.woff2 node_modules/@fontsource/ibm-plex-serif/files/ibm-plex-serif-latin-500-normal.woff2 node_modules/@fontsource/ibm-plex-serif/files/ibm-plex-serif-latin-600-normal.woff2 public/vendor/fonts/",
     "dev": "npm run vendor && wrangler dev",
     "deploy": "npm run vendor && wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply efc-expenses --local",
@@ -14,6 +14,8 @@
   "type": "module",
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261022.1",
+    "@fontsource/ibm-plex-sans": "^5.3.0",
+    "@fontsource/ibm-plex-serif": "^5.3.0",
     "@types/node": "^26.6.5",
     "typescript": "^7.0.2",
     "wrangler": "^4.152.0"

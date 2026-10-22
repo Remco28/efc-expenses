@@ -316,10 +316,11 @@ function renderTrip(tab, focusSel = focusKey()) {
   app.innerHTML = `${bar({ back: "#/", title: t.name, sub: `${range(t)}${t.location ? " · " + t.location : ""}`, right: final() ? `<span class="chip gold">Final</span>` : "" })}
     <div class="wrap wide"><div class="trip">
       <aside class="side stack">${youCard()}${stepsCard()}</aside>
-      <div class="main stack"><nav class="tabs" aria-label="Sections">${tabs}</nav><div id="tab" class="stack"></div></div>
+      <div class="main stack"><nav class="tabs" aria-label="Sections">${tabs}</nav><div id="tab" class="stack ${S.lastTab === tab ? "" : "enter"}"></div></div>
     </div></div>`;
   ({ expenses: tabExpenses, families: tabFamilies, settle: tabSettle, treasurer: tabTreasurer })[tab]?.(document.getElementById("tab"));
   if (focusSel) restoreFocus(focusSel);
+  S.lastTab = tab;
 }
 
 // ---------- expenses ----------
@@ -346,7 +347,7 @@ function tabExpenses(el) {
           <div class="rc ${e.receipt_key ? "has" : ""}">${icon(e.receipt_key ? "receipt" : "nore")}${e.receipt_key ? "Receipt" : "No receipt"}</div></div></a>`; }).join("")}`).join("");
   el.innerHTML = `
     ${!t.treasurer_name && expenses.length && !final() ? needTreasurerCallout(t) : ""}
-    <div class="card">
+    <div class="card ledger">
       <div class="total"><span class="muted">${plural(expenses.length, "shared expense", "shared expenses")}</span><span class="v">${money(total)}</span></div>
       ${expenses.length ? rows : `<div class="empty"><div class="ic">${icon("receipt")}</div><b>Nothing added yet</b>Whoever pays for something shared adds it here, ideally with a photo of the receipt.</div>`}
     </div>
@@ -772,20 +773,20 @@ function tabSettle(el) {
     ${noFence.length ? `<div class="callout warn">${noFence.map(p => esc(p.name)).join(", ")} ${noFence.length > 1 ? "have" : "has"} no fencing days ticked, so they pay nothing toward the coach's stay. Check Families.</div>` : ""}
     ${t.treasurer_name ? `<div class="card"><div class="eyebrow">Treasurer</div><h2 style="margin-top:4px">${esc(tname(t))}</h2>
         ${t.treasurer_notes ? `<div class="paynote"><b>Send money to:</b> ${esc(t.treasurer_notes)}</div>` : ""}</div>` : needTreasurerCallout(t)}
-    <div class="card"><h2>${final() ? "Who pays what" : "Who will pay what"}</h2>
+    <div class="card ledger"><h2>${final() ? "Who pays what" : "Who will pay what"}</h2>
       ${final() ? "" : `<p class="muted small" style="margin-top:-4px">This updates as expenses are added. It's fixed when the trip is finalized.</p>`}${todo || `<p class="faint">Add families first.</p>`}</div>
-    <div class="card"><h2>Balances</h2>
+    <div class="card ledger"><h2>Balances</h2>
       <div class="table-scroll"><table class="t bal"><tr><th>Family</th><th class="n">Share</th><th class="n">Paid</th><th class="n">Balance</th></tr>
       ${families.map(f => { const r = rows[f.id]; return `<tr><td>${esc(f.name)}</td><td class="n">${money(r.owed)}</td><td class="n">${money(r.paid)}</td>
         <td class="n ${r.net > 0 ? "get" : r.net < 0 ? "owe" : ""}"><b>${r.net > 0 ? "+" : ""}${money(r.net)}</b></td></tr>`; }).join("")}
         <tr><td><b>Total</b></td><td class="n"><b>${money(total)}</b></td><td class="n"><b>${money(total)}</b></td><td></td></tr></table></div>
       <p class="hint">Share is the family's part of every expense. Paid is what they put on their own card. A plus means they're owed money, a minus means they owe.</p></div>
-    <div class="card"><h2>Each family's breakdown</h2><p class="muted small" style="margin-top:-4px">Tap a family to see every expense they share and how much of it is theirs.</p>${families.map(statement).join("")}</div>
-    ${final() ? `<div class="card"><h2>Trip finalized</h2><p class="muted small">The trip is locked. Copy the payment list into the team chat, or download the record with every receipt.</p>
+    <div class="card ledger"><h2>Each family's breakdown</h2><p class="muted small" style="margin-top:-4px">Tap a family to see every expense they share and how much of it is theirs.</p>${families.map(statement).join("")}</div>
+    ${final() ? `<div class="card action"><h2>Trip finalized</h2><p class="muted small">The trip is locked. Copy the payment list into the team chat, or download the record with every receipt.</p>
         <div class="row-actions"><button class="btn-primary" data-act="copy-final">${icon("copy")} Copy payment list</button>
         <button class="btn-ghost" data-act="export">${icon("download")} Download PDF record</button></div>
         <div class="row-actions"><button class="link" data-act="reopen">Reopen the trip to make changes</button></div></div>`
-      : `<div class="card"><h2>Finalize</h2><p class="muted small">When every expense is in, finalize the trip. Expenses lock and each family gets one payment to make or receive.</p>
+      : `<div class="card action"><h2>Finalize</h2><p class="muted small">When every expense is in, finalize the trip. Expenses lock and each family gets one payment to make or receive.</p>
         ${blocked && expenses.length ? `<p class="small owe">${!t.treasurer_name ? "Pick a treasurer first." : "Fix the expenses above first."}</p>` : ""}
         <div class="row-actions"><button class="btn-primary" data-act="finalize" ${blocked ? "disabled" : ""}>${icon("flag")} Finalize trip</button></div></div>`}
     ${activity.length ? `<details class="card"><summary>Recent changes</summary>
@@ -796,7 +797,7 @@ function tabSettle(el) {
 function tabTreasurer(el) {
   const { tournament: t, families } = S.trip;
   if (!t.treasurer_name) {
-    el.innerHTML = `<div class="card"><h2>Be the treasurer</h2>
+    el.innerHTML = `<div class="card action"><h2>Be the treasurer</h2>
       <p class="muted">The treasurer collects from every family that owes money, then pays back every family that's owed. That way nobody else has to pay more than one person.</p>
       <p class="muted">It takes a few minutes after the trip, and the app tracks who has paid.</p>
       <div class="row-actions"><button class="btn-primary" data-act="volunteer">I'll be the treasurer</button>
@@ -821,15 +822,15 @@ function tabTreasurer(el) {
     <div class="card"><div class="head" style="margin-bottom:4px"><div><div class="eyebrow">Treasurer</div><h2 style="margin-top:4px">${esc(tname(t))}</h2></div>
         <button class="btn-ghost btn-small" data-act="volunteer">${icon("edit")} Edit</button></div>
       <div class="paynote"><b>Families send money to:</b> ${t.treasurer_notes ? esc(t.treasurer_notes) : `<span class="owe">not added yet. Tap Edit and add your Venmo or Zelle.</span>`}</div></div>
-    ${final() ? `<div class="card"><h2>Progress</h2>
+    ${final() ? `<div class="card ledger"><h2>Progress</h2>
       <table class="t"><tr><td>Collected</td><td class="n"><b>${money(sum(ins, true))}</b> of ${money(sum(ins))}</td></tr>
         <tr><td>Paid out</td><td class="n"><b>${money(sum(outs, true))}</b> of ${money(sum(outs))}</td></tr>
         <tr><td>${sum(ins, true) >= sum(outs, true) ? "In hand right now" : "Paid out ahead of collecting"}</td><td class="n"><b>${money(Math.abs(sum(ins, true) - sum(outs, true)))}</b></td></tr></table>
       ${sum(ins, true) < sum(outs, true) ? `<p class="hint">You've sent out more than you've collected so far. That's fine if you fronted it; it evens out as the remaining families pay.</p>` : ""}
       <p class="hint">${t.treasurer_family_id ? `The treasurer's own family (${esc(famName(t.treasurer_family_id))}) ${mine >= 0 ? `keeps ${money(mine)}: that much of what's collected stays with the treasurer at the end` : `adds ${money(-mine)}: the treasurer puts that much in themselves`}. After that, nothing is left over.` : "Everything collected gets paid out, so nothing is left over at the end."}</p></div>`
       : `<div class="callout">Nothing to collect yet. Once the trip is finalized, this becomes your checklist: tick each family as their payment arrives and as you pay people back.</div>`}
-    <div class="card"><h2>${final() ? "Collect from" : "You'll collect from"}</h2>${final() ? `<p class="muted small" style="margin-top:-4px">Tick each one when the money arrives.</p>` : ""}${ins.map(row).join("") || `<p class="faint">Nobody owes anything.</p>`}</div>
-    <div class="card"><h2>${final() ? "Pay back" : "You'll pay back"}</h2>${final() ? `<p class="muted small" style="margin-top:-4px">Tick each one once you've sent it.</p>` : ""}${outs.map(row).join("") || `<p class="faint">Nobody is owed anything.</p>`}</div>
+    <div class="card ledger"><h2>${final() ? "Collect from" : "You'll collect from"}</h2>${final() ? `<p class="muted small" style="margin-top:-4px">Tick each one when the money arrives.</p>` : ""}${ins.map(row).join("") || `<p class="faint">Nobody owes anything.</p>`}</div>
+    <div class="card ledger"><h2>${final() ? "Pay back" : "You'll pay back"}</h2>${final() ? `<p class="muted small" style="margin-top:-4px">Tick each one once you've sent it.</p>` : ""}${outs.map(row).join("") || `<p class="faint">Nobody is owed anything.</p>`}</div>
     ${final() ? `<button class="btn-primary btn-block" data-act="copy-final">${icon("copy")} Copy payment list</button>` : ""}`;
 }
 

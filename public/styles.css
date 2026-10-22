@@ -327,3 +327,84 @@ h1[tabindex="-1"]:focus { outline: none; box-shadow: none; }
 .mark img { width: 32px; height: 34px; object-fit: contain; }
 .hero .mark { width: 104px; height: 104px; margin: 0 auto 16px; box-shadow: 0 0 0 3px var(--gold), 0 6px 18px rgba(20, 42, 76, .15); }
 .hero .mark img { width: 80px; height: 84px; }
+
+/* =====================================================================
+   Statement theme: IBM Plex, square corners, ledger rules, and distinct
+   looks for the answer, actions and figures, so the eye has landmarks.
+   ===================================================================== */
+@font-face { font-family: "Plex Sans"; src: url(/vendor/fonts/ibm-plex-sans-latin-400-normal.woff2) format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Plex Sans"; src: url(/vendor/fonts/ibm-plex-sans-latin-500-normal.woff2) format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "Plex Sans"; src: url(/vendor/fonts/ibm-plex-sans-latin-600-normal.woff2) format("woff2"); font-weight: 600; font-display: swap; }
+@font-face { font-family: "Plex Sans"; src: url(/vendor/fonts/ibm-plex-sans-latin-700-normal.woff2) format("woff2"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "Plex Serif"; src: url(/vendor/fonts/ibm-plex-serif-latin-500-normal.woff2) format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "Plex Serif"; src: url(/vendor/fonts/ibm-plex-serif-latin-600-normal.woff2) format("woff2"); font-weight: 600; font-display: swap; }
+
+:root { --radius: 3px; --serif: "Plex Serif", Georgia, "Times New Roman", serif; --rule: #c9d0da; --paper-2: #fbfaf6; }
+@media (prefers-color-scheme: dark) { :root { --rule: #33456a; --paper-2: #1a2840; } }
+body { font-family: "Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; font-feature-settings: "tnum" 1, "lnum" 1; letter-spacing: .005em; }
+
+/* square everything */
+.card, button, .btn, input, select, textarea, .callout, .incl, .choice, .receipt-pick, .receipt img, .receipt .pdf,
+.days button, .cell, .tick, .xrow .ic, .sendto, .you .sendto { border-radius: var(--radius); }
+.pills button, .chip, .who-btn { border-radius: 2px; }
+.sheet { border-radius: 6px 6px 0 0; }
+@media (min-width: 640px) { .sheet { border-radius: 6px; } }
+.tick { border-radius: 2px; }
+.mark { border-radius: 50%; }
+.card { box-shadow: none; border-color: var(--rule); }
+
+/* headings: serif, with a rule, like a financial statement */
+h1, h2, .hero h1 { font-family: var(--serif); font-weight: 600; letter-spacing: 0; }
+.bar .title .t { font-family: var(--serif); font-weight: 600; font-size: 19px; }
+.card > h2, .card .head h2 { font-size: 18px; padding-bottom: 8px; border-bottom: 1px solid var(--rule); margin-bottom: 12px; }
+.eyebrow, table.t th, .dayhead { letter-spacing: .09em; font-weight: 600; }
+
+/* tabs: a plain underlined row instead of pills */
+.tabs { background: var(--bg); border: none; border-bottom: 1px solid var(--rule); border-radius: 0; padding: 0; gap: 0; box-shadow: none; }
+.tabs a { border-radius: 0; padding: 12px 2px 10px; color: var(--ink-2); border-bottom: 3px solid transparent; margin-bottom: -1px; }
+.tabs a.on { background: none; color: var(--ink); border-bottom-color: var(--gold); }
+.tabs a:hover { color: var(--ink); }
+
+/* the answer: a solid navy panel, the anchor of the page */
+.card.you { background: var(--navy-2); border-color: var(--navy-2); color: #fff; border-top: 4px solid var(--gold); }
+.card.you .eyebrow, .card.you .muted, .card.you .hint, .card.you .figures, .card.you .faint { color: rgba(255,255,255,.72); }
+.card.you .figures b, .card.you .big { color: #fff; }
+.card.you .big { font-family: var(--serif); font-weight: 600; }
+.card.you .owe { color: #ffb4a3; } .card.you .get { color: #9be3b7; }
+.card.you .link, .card.you a.link { color: var(--gold); }
+.card.you .sendto { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.18); color: #fff; }
+.card.you .chip { background: rgba(255,255,255,.12); color: #fff; border-color: rgba(255,255,255,.25); }
+.card.you .chip.ok { background: #1d7a46; border-color: #1d7a46; }
+.card.you .pills button { background: transparent; color: #fff; border-color: rgba(255,255,255,.4); }
+.card.you .pills button:hover { border-color: var(--gold); }
+.card.you .btn-primary { box-shadow: none; }
+@media (prefers-color-scheme: dark) { .card.you { background: #0f2240; border-color: #2a4a7c; } }
+
+/* actions: a warm, gold-edged panel that says "do something here" */
+.card.action { background: var(--paper-2); border-left: 4px solid var(--gold); }
+.callout.warn { border-left: 4px solid var(--gold); border-radius: var(--radius); }
+
+/* figures: ledger sheets with ruled lines */
+.card.ledger { background: var(--paper); }
+.card.ledger .xrow, .card.ledger .prow, table.t th, table.t td { border-color: var(--rule); }
+table.t th { border-bottom: 1.5px solid var(--ink-2); }
+/* accounting totals: a single rule above, a double rule below */
+table.bal tr:last-child td.n b { display: inline-block; border-top: 1px solid var(--ink); border-bottom: 3px double var(--ink); padding: 2px 0 1px; }
+.total .v { border-bottom: 3px double var(--ink); padding-bottom: 1px; line-height: 1.1; }
+.money-in input, .total .v, .you .big, .prow .amt, .xrow .amt, .incl .amt { font-feature-settings: "tnum" 1, "lnum" 1; }
+.xrow .ic { background: transparent; border: 1px solid var(--rule); }
+
+/* buttons: crisper, less candy */
+.btn-primary { font-weight: 600; letter-spacing: .01em; }
+.btn-ghost, .btn-danger { border-color: var(--rule); }
+.fab { border-radius: var(--radius); box-shadow: 0 2px 0 rgba(20, 42, 76, .25); }
+.steps li .b { border-radius: 0; height: 4px; }
+.savebar { box-shadow: none; border-top: 1px solid var(--rule); }
+
+/* moving between sections: the new tab slides in, so the change registers */
+#tab.enter > * { animation: rise .22s ease-out both; }
+#tab.enter > *:nth-child(2) { animation-delay: .03s; }
+#tab.enter > *:nth-child(3) { animation-delay: .06s; }
+#tab.enter > *:nth-child(4) { animation-delay: .09s; }
+#tab.enter > *:nth-child(n+5) { animation-delay: .12s; }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
