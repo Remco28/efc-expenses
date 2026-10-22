@@ -187,6 +187,7 @@ async function show() {
   if (!S.name) return renderName();
   try {
     if (parts[0] === "t" && parts[1]) {
+      await famQueue;                 // let any save from the family screen land first
       await loadTrip(Number(parts[1]));
       if (parts[2] === "e") return renderEditor(parts[3] === "new" ? null : Number(parts[3]));
       if (parts[2] === "f") { S.draft = null; return renderFamily(Number(parts[3])); }
@@ -676,8 +677,13 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
   famPending++;
   famQueue = famQueue.then(() => act(call)).catch(() => {}).then(async () => {
     if (--famPending) return;
+    // If they've already left this screen (tapped Done or Back while a save was
+    // still going), don't drag them back: the new screen loads fresh data itself.
+    const here = () => location.hash.startsWith(`#/t/${S.trip.tournament.id}/f/${fid}`);
+    if (!here()) return;
     const f = focusAfter || focusKey();
     await loadTrip(S.trip.tournament.id);
+    if (!here()) return;
     renderFamily(fid, f);
     if (st()) { st().textContent = `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
   });
