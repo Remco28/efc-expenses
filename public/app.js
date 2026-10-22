@@ -38,8 +38,7 @@ const ICON = {
 };
 const icon = (n, cls = "i") => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
 const CAT_ICON = { meal: "meal", coach_travel: "plane", coach_stay: "whistle", transport: "car", supplies: "box", other: "tag" };
-const MARK = `<svg class="mark" viewBox="0 0 64 64" aria-hidden="true"><path d="M32 3l25 9v17c0 16-11 27-25 32C18 56 7 45 7 29V12z" fill="#1f3d6b" stroke="#f0b429" stroke-width="3"/>
-  <path d="M20 44L42 18M42 18l-1 7M42 18l-7 1M23 37l5 5" stroke="#f0b429" stroke-width="3.2" stroke-linecap="round" fill="none"/><circle cx="20" cy="44" r="3" fill="#f0b429"/></svg>`;
+const MARK = `<span class="mark"><img src="/logo.png" alt="Elite FC"></span>`;
 
 let toastTimer;
 function toast(msg) {
@@ -152,7 +151,7 @@ function bar({ back, title, sub, right = "" }) {
 
 // ---------- sign-in ----------
 function renderLogin() {
-  app.innerHTML = `<div class="wrap narrow"><div class="hero">${MARK}<h1>EFC Trip Expenses</h1><p>Shared costs for team travel, split fairly.</p></div>
+  app.innerHTML = `<div class="wrap narrow"><div class="hero">${MARK}<h1>Elite FC Trip Expenses</h1><p>Shared costs for team travel, split fairly.</p></div>
     <form class="card" id="login">
       <label class="f" for="code" style="margin-top:0">Team access code</label>
       <input id="code" type="password" autocomplete="current-password" required>

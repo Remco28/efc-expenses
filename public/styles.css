@@ -321,3 +321,9 @@ h1[tabindex="-1"]:focus { outline: none; box-shadow: none; }
   .who-btn { max-width: 30vw; }
   .bar .title .s { display: none; }
 }
+
+/* club logo: the shield's navy outline needs a white badge on the navy bar */
+.mark { width: 42px; height: 42px; flex: none; border-radius: 50%; background: #fff; display: grid; place-items: center; box-shadow: 0 0 0 2px var(--gold); }
+.mark img { width: 32px; height: 34px; object-fit: contain; }
+.hero .mark { width: 104px; height: 104px; margin: 0 auto 16px; box-shadow: 0 0 0 3px var(--gold), 0 6px 18px rgba(20, 42, 76, .15); }
+.hero .mark img { width: 80px; height: 84px; }

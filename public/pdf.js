@@ -78,8 +78,8 @@ export async function exportPdf(trip) {
     if (title != null) runningTitle = title;
     page = doc.addPage([W, H]);
     rect(0, H - 34, W, 34, C.navy); rect(0, H - 36, W, 2, C.gold);
-    text("EFC TRIP EXPENSES", M, H - 22, { f: bold, size: 7.5, color: C.gold });
-    text(`${t.name}${runningTitle ? "   |   " + runningTitle : ""}`, M + 96, H - 22, { size: 8.5, color: C.white, w: CW - 96 });
+    text("ELITE FC TRIP EXPENSES", M, H - 22, { f: bold, size: 7.5, color: C.gold });
+    text(`${t.name}${runningTitle ? "   |   " + runningTitle : ""}`, M + 118, H - 22, { size: 8.5, color: C.white, w: CW - 118 });
     y = H - 62;
   };
   const need = h => { if (y - h < BOTTOM) newPage(); };
@@ -125,9 +125,18 @@ export async function exportPdf(trip) {
   // ---------- page 1: summary ----------
   page = doc.addPage([W, H]);
   rect(0, H - 104, W, 104, C.navy); rect(0, H - 108, W, 4, C.gold);
-  text("EFC TRIP EXPENSES  |  RECORD OF SHARED COSTS", M, H - 34, { f: bold, size: 8, color: C.gold });
-  text(t.name, M, H - 64, { f: bold, size: tw(t.name, bold, 24) > CW - 130 ? 18 : 24, color: C.white, w: CW - 130 });
-  text(`${range(t)}${t.location ? "   |   " + t.location : ""}`, M, H - 86, { size: 10, color: C.soft, w: CW - 130 });
+  // Club logo on a white badge, since its navy outline would vanish on navy.
+  let LX = M;
+  try {
+    const logo = await doc.embedPng(await fetch("/logo.png").then(r => r.arrayBuffer()));
+    page.drawCircle({ x: M + 34, y: H - 54, size: 34, color: C.white, borderColor: C.gold, borderWidth: 2 });
+    const lh = 50, lw = logo.width * lh / logo.height;
+    page.drawImage(logo, { x: M + 34 - lw / 2, y: H - 54 - lh / 2, width: lw, height: lh });
+    LX = M + 84;
+  } catch {}
+  text("ELITE FC TRIP EXPENSES  |  RECORD OF SHARED COSTS", LX, H - 34, { f: bold, size: 8, color: C.gold });
+  text(t.name, LX, H - 64, { f: bold, size: tw(t.name, bold, 24) > CW - 130 - (LX - M) ? 18 : 24, color: C.white, w: CW - 130 - (LX - M) });
+  text(`${range(t)}${t.location ? "   |   " + t.location : ""}`, LX, H - 86, { size: 10, color: C.soft, w: CW - 130 - (LX - M) });
   const stamp = isFinal ? "FINAL" : "DRAFT", sw = 78;
   rect(W - M - sw, H - 70, sw, 24, isFinal ? C.gold : C.navy, C.gold);
   text(stamp, W - M - sw, H - 62, { f: bold, size: 11, color: isFinal ? C.navy : C.gold, w: sw, align: "center" });
@@ -298,7 +307,7 @@ export async function exportPdf(trip) {
   all.forEach((p, i) => {
     page = p;
     hline(M + 6, C.line, 0.5);
-    text(`EFC Trip Expenses   |   ${t.name}   |   printed ${printed}`, M, M - 8, { size: 7.5, color: C.grey, w: CW - 90 });
+    text(`Elite FC Trip Expenses   |   ${t.name}   |   printed ${printed}`, M, M - 8, { size: 7.5, color: C.grey, w: CW - 90 });
     text(`Page ${i + 1} of ${all.length}`, W - M - 90, M - 8, { size: 7.5, color: C.grey, w: 90, align: "right" });
   });
 
