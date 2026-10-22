@@ -796,13 +796,14 @@ async function volunteerSheet() {
   const t = S.trip.tournament, fams = S.trip.families, me = myFamily();
   const byName = fams.find(f => new RegExp(`\\b${f.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(S.name));
   const famPick = t.treasurer_name ? t.treasurer_family_id : me && me !== "none" ? me.id : byName?.id ?? null;
+  const guessed = !t.treasurer_name && famPick ? (me && me !== "none" ? `We filled in ${esc(famName(famPick))}, the family you picked on this phone. ` : `We guessed ${esc(famName(famPick))} from your name; change it if that's wrong. `) : "";
   const v = await sheet({
     title: t.treasurer_name ? "Treasurer details" : "Be the treasurer", ok: t.treasurer_name ? "Save" : "Confirm",
     lead: final() ? "The treasurer can't change once the trip is final, but you can update where families send money." : "",
     body: `${final() ? "" : `<label class="f" for="tn" style="margin-top:0">Treasurer's name</label><input id="tn" name="treasurer_name" value="${esc(t.treasurer_name || S.name)}" required>
       <label class="f" for="tf">Their family on this trip</label><select id="tf" name="treasurer_family_id"><option value="">Not on this trip</option>
         ${fams.map(f => `<option value="${f.id}" ${famPick === f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select>
-      <p class="hint">${famPick && !t.treasurer_name ? `We guessed ${esc(famName(famPick))} from your name; change it if that's wrong. ` : ""}If their family is on the trip, it doesn't pay itself. It just keeps or adds the difference at the end.</p>`}
+      <p class="hint">${guessed}If their family is on the trip, it doesn't pay itself. It just keeps or adds the difference at the end.</p>`}
       <label class="f" for="tnotes" ${final() ? 'style="margin-top:0"' : ""}>Where should families send money?</label>
       <input id="tnotes" name="treasurer_notes" value="${esc(t.treasurer_notes || "")}" placeholder="e.g. Venmo @lisa-chen or Zelle 555-0100">`,
     extra: t.treasurer_name && !final() ? `<div class="row-actions"><button type="button" class="link danger" data-sheet-act="remove">Step down as treasurer</button></div>` : "",
@@ -825,7 +826,10 @@ app.addEventListener("click", async ev => {
         return;
       }
       case "new-trip": return newTrip();
-      case "pick-me": save(myKey(), b.dataset.id || null); return renderTrip(tabNow());
+      case "pick-me":
+        save(myKey(), b.dataset.id || null);
+        // The button that was pressed is gone after this; focus what replaced it.
+        return renderTrip(tabNow(), b.dataset.id ? '[data-act="pick-me"][data-id=""]' : '[data-act="pick-me"]');
       case "add-person": {
         const days = tournamentDays(t.start_date, t.end_date);
         return personSheet({ id: 0, family_id: id, name: "", is_fencer: true, days, fencing_days: [] });
