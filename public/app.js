@@ -127,6 +127,8 @@ async function show() {
     if (parts[0] === "t" && parts[1]) {
       await loadTrip(Number(parts[1]));
       if (parts[2] === "e") return renderEditor(parts[3] === "new" ? null : Number(parts[3]));
+      if (parts[2] === "f") { S.draft = null; return renderFamily(Number(parts[3])); }
+      if (parts[2] === "day") { S.draft = null; return renderDay(parts[3]); }
       S.draft = null;
       return renderTrip(q.get("tab") || "expenses");
     }
@@ -280,8 +282,12 @@ function youCard() {
   if (!me) return `<div class="card you"><div class="eyebrow">Your family</div>
     <p style="margin:6px 0 4px">Which family are you? Pick one and we'll show what you owe right here.</p>
     <p class="hint" style="margin:0 0 10px">This only changes what this phone shows you. It doesn't change anything for anyone else.</p>
-    <div class="pills">${families.map(f => `<button data-act="pick-me" data-id="${f.id}">${esc(f.name)}</button>`).join("")}
-      <button data-act="pick-me" data-id="none">Not on this trip</button></div></div>`;
+    ${families.length > 8 ? `<div class="pickrow"><select id="pickfam" aria-label="Your family"><option value="">Choose your family…</option>
+        ${families.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join("")}<option value="none">I'm not on this trip</option></select></div>
+      <div class="pills" style="margin-top:8px">`
+    : `<div class="pills">${families.map(f => `<button data-act="pick-me" data-id="${f.id}">${esc(f.name)}</button>`).join("")}
+      <button data-act="pick-me" data-id="none">Not on this trip</button>`}
+      ${final() ? "" : `<button class="addmine" data-act="add-my-family">${icon("plus")} Add my family</button>`}</div></div>`;
   const change = `<button class="link small tap" data-act="pick-me" data-id="">Change family</button>`;
   if (me === "none") return `<div class="card you"><div class="head" style="margin:0"><span class="muted">You're not on this trip.</span>${change}</div></div>`;
   const r = balances(expenses, families).rows[me.id];
@@ -324,6 +330,14 @@ function restoreFocus(sel, fallback) {
   const el = (sel && document.querySelector(sel)) || (fallback && document.querySelector(fallback));
   if (el) el.focus({ preventScroll: !!sel && !!document.querySelector(sel) });
 }
+
+document.addEventListener("change", ev => {
+  if (ev.target.id !== "pickfam" || !ev.target.value) return;
+  const v = ev.target.value;
+  save(myKey(), v);
+  toast(v === "none" ? "Got it: you're not on this trip." : `Showing the ${famName(v)} family. Tap "Change family" to switch.`);
+  renderTrip(tabNow(), '[data-act="pick-me"][data-id=""]');
+});
 
 function renderTrip(tab, focusSel = focusKey()) {
   const { tournament: t } = S.trip;
@@ -373,41 +387,57 @@ function tabExpenses(el) {
 }
 
 // ---------- families & attendance ----------
+// Days are set per family; a person follows them unless they have their own.
+// The Families tab is a short list of one-line summaries; each family opens on
+// its own Manage family screen, and every change there saves as you tap.
+function daysSummary(list) {
+  const all = tournamentDays(S.trip.tournament.start_date, S.trip.tournament.end_date);
+  const sorted = all.filter(d => list.includes(d));
+  if (!sorted.length) return "No days";
+  if (sorted.length === all.length && all.length > 1) return "Whole trip";
+  const runs = [];
+  for (const d of sorted) {
+    const last = runs[runs.length - 1];
+    if (last && all.indexOf(d) === all.indexOf(last[1]) + 1) last[1] = d; else runs.push([d, d]);
+  }
+  return runs.map(([a, b]) => a === b ? dayShort(a) : `${dayShort(a)}–${dayShort(b)}`).join(", ");
+}
+
+function familyFlags(f) {
+  const out = [];
+  if (!f.people.length) out.push("nobody added yet");
+  for (const p of f.people) {
+    if (!p.days.length) out.push(`${p.name} has no days`);
+    else if (p.is_fencer && !p.fencing_days.length) out.push(`${p.name} has no fencing days`);
+  }
+  return out;
+}
+
 function tabFamilies(el) {
   const { tournament: t, families } = S.trip;
   const days = tournamentDays(t.start_date, t.end_date);
   const ro = final();
-  const famCard = f => `
-    <div class="card">
-      <div class="head" style="margin-bottom:2px"><h2>${esc(f.name)}</h2>
-        <button class="btn-ghost btn-small" data-act="edit-family" data-id="${f.id}" aria-label="${ro ? "Payment details for" : "Edit"} the ${esc(f.name)} family">${icon("edit")} ${ro ? "Payment details" : "Edit"}</button></div>
-      <div class="paynote">How to pay this family: ${f.pay_notes ? esc(f.pay_notes) : `<span class="faint">not added yet</span>`}</div>
-      <div style="margin-top:10px">${f.people.map(p => `
-        <button class="member" data-act="edit-person" data-id="${p.id}" ${ro ? "disabled" : ""}>
-          <div class="grow"><div class="nm">${esc(p.name)} ${p.is_fencer ? `<span class="chip fencer">Fencer</span>` : ""}</div>
-            <div class="when">${p.days.length === days.length ? "Whole trip" : p.days.length ? p.days.map(dayShort).join(", ") : `<span class="owe">No days ticked</span>`}${p.is_fencer ? ` · ${p.fencing_days.length ? `fences ${p.fencing_days.map(dayShort).join(", ")}` : `<span class="owe">no fencing days</span>`}` : ""}</div></div>
-          ${ro ? "" : icon("chev")}</button>`).join("") || `<p class="faint small" style="margin:8px 0 0">Nobody added yet.</p>`}
-      ${ro ? "" : `<button class="btn-ghost btn-small" style="margin-top:8px" data-act="add-person" data-id="${f.id}">${icon("plus")} Add person</button>`}</div>
-    </div>`;
-  const people = families.flatMap(f => f.people.map(p => ({ ...p, fam: f.name })));
-  const grid = (fence) => {
-    const rows = families.map(f => {
-      const ps = f.people.filter(p => !fence || p.is_fencer);
-      if (!ps.length) return "";
-      return `<tr class="fam"><td class="who" colspan="${days.length + 1}">${esc(f.name)}</td></tr>` + ps.map(p => `<tr><td class="who">${esc(p.name)}</td>${days.map(d => {
-        const on = (fence ? p.fencing_days : p.days).includes(d);
-        return `<td><button class="cell ${fence ? "fence" : ""} ${on ? "on" : ""}" data-act="cell" data-id="${p.id}" data-day="${d}" data-kind="${fence ? "fencing" : "days"}" ${ro ? "disabled" : ""}
-          aria-pressed="${on}" aria-label="${esc(p.name)} ${fence ? "fencing" : "there"} ${dayLong(d)}">${icon("check")}</button></td>`;
-      }).join("")}</tr>`).join("");
-    }).join("");
-    return `<div class="grid-wrap"><table class="grid"><thead><tr><th class="who"></th>${days.map(d => `<th>${wd(d)}<br>${utc(d).getUTCDate()}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
+  const row = f => {
+    const fencers = f.people.filter(p => p.is_fencer).length, own = f.people.filter(p => p.own_days).length, flags = familyFlags(f);
+    const words = [f.name, ...f.people.map(p => p.name)].join(" ").toLowerCase();
+    return `<a class="famrow" href="#/t/${t.id}/f/${f.id}" data-search="${esc(words)}">
+      <div class="grow"><div class="fam-name">${esc(f.name)}</div>
+        <div class="fam-sum">${plural(f.people.length, "person", "people")} · ${fencers} fencing · ${esc(daysSummary(f.days))}${own ? ` · ${own} with own days` : ""}</div>
+        ${flags.length ? `<div class="fam-flag">${icon("flag")} ${esc(flags.join("; "))}</div>` : ""}</div>${icon("chev")}</a>`;
   };
+  const totalPeople = families.reduce((n, f) => n + f.people.length, 0);
   el.innerHTML = `
-    ${families.map(famCard).join("") || `<div class="card empty"><div class="ic">${icon("users")}</div><b>No families yet</b>Add each family going on this trip, then the people in it.</div>`}
-    ${ro ? "" : `<form class="card" id="addfam"><label class="f" for="fname" style="margin-top:0">Add a family</label>
-      <div style="display:flex;gap:8px"><input id="fname" placeholder="Family name, e.g. Okafor" required><button class="btn-primary">Add</button></div></form>`}
-    ${people.length ? `<div class="card"><h2>Who's there each day</h2><p class="muted small">Everyone on the trip: fencers, parents, siblings, grandparents. Tick each day they're there. Meals are split among everyone there that day, and a family only shares costs from days someone in it was there.</p>${grid(false)}</div>` : ""}
-    ${people.some(p => p.is_fencer) ? `<div class="card"><h2>Who fences each day</h2><p class="muted small">Fencers only. Tick just the days each kid competes (not travel days). These decide each family's share of the coach's hotel and meals.</p>${grid(true)}</div>` : ""}
+    ${families.length ? `<div class="card ledger">
+      <div class="head"><h2 style="border:0;padding:0;margin:0">${plural(families.length, "family", "families")} · ${plural(totalPeople, "person", "people")}</h2>
+        ${ro ? "" : `<button class="btn-primary btn-small" data-act="add-family">${icon("plus")} Add family</button>`}</div>
+      ${families.length > 8 ? `<input id="famsearch" type="search" placeholder="Find a family or person" aria-label="Find a family or person" style="margin-bottom:6px">` : ""}
+      <div id="famlist">${families.map(row).join("")}</div>
+      <p class="faint small" id="nomatch" hidden>No family or person matches that.</p>
+    </div>
+    <div class="card"><h2>Check a day</h2><p class="muted small" style="margin-top:-4px">See who's there and who's fencing on one day, family by family.</p>
+      <div class="days">${days.map(d => `<a class="daylink" href="#/t/${t.id}/day/${d}">${esc(dayShort(d))}</a>`).join("")}</div></div>`
+    : `<div class="card empty"><div class="ic">${icon("users")}</div><b>No families yet</b>Add each family going on this trip. You'll set who's in it, which days they're there, and who's fencing.
+        ${ro ? "" : `<div class="row-actions"><button class="btn-primary" data-act="add-family">${icon("plus")} Add family</button></div>`}</div>`}
     ${ro ? "" : `<details class="card"><summary>Trip details</summary>
       <form id="tripedit">
         <label class="f" for="en">Tournament</label><input id="en" value="${esc(t.name)}" required>
@@ -417,13 +447,11 @@ function tabFamilies(el) {
         <p class="hint">Shortening the trip removes the dropped days from everyone's attendance.</p>
         <div class="row-actions"><button class="btn-primary">Save details</button>${t.is_sandbox ? "" : `<button type="button" class="btn-danger" data-act="del-trip">Delete trip</button>`}</div>
       </form></details>`}`;
-  const af = document.getElementById("addfam");
-  if (af) af.onsubmit = async ev => {
-    ev.preventDefault();
-    const name = document.getElementById("fname").value.trim(); if (!name) return;
-    const r = await act(() => api(`/tournaments/${t.id}/families`, { method: "POST", body: { name } }));
-    await refresh("families");
-    personSheet({ id: 0, family_id: r.id, name: "", is_fencer: true, days: [...days], fencing_days: [] });
+  const search = document.getElementById("famsearch");
+  if (search) search.oninput = () => {
+    const q = search.value.trim().toLowerCase(); let shown = 0;
+    document.querySelectorAll("#famlist .famrow").forEach(a => { const hit = !q || a.dataset.search.includes(q); a.hidden = !hit; shown += hit; });
+    document.getElementById("nomatch").hidden = shown > 0;
   };
   const te = document.getElementById("tripedit");
   if (te) te.onsubmit = async ev => {
@@ -435,70 +463,138 @@ function tabFamilies(el) {
   };
 }
 
-async function personSheet(p) {
-  const t = S.trip.tournament, days = tournamentDays(t.start_date, t.end_date);
-  const fam = famName(p.family_id);
-  const dayBtns = (list, kind) => days.map(d => `<button type="button" class="${list.includes(d) ? "on" : ""}" data-day="${d}" aria-pressed="${list.includes(d)}">${esc(dayShort(d))}</button>`).join("");
+async function addFamily({ mine = false } = {}) {
+  const t = S.trip.tournament;
   const v = await sheet({
-    title: p.id ? `Edit ${esc(p.name)}` : `Add someone to the ${esc(fam)} family`, ok: p.id ? "Save" : "Add person",
-    body: `<label class="f" for="pn" style="margin-top:0">Name</label><input id="pn" name="name" value="${esc(p.name)}" placeholder="First name" required>
-      <label class="switch"><input type="checkbox" name="is_fencer" ${p.is_fencer ? "checked" : ""}> Fencing at this tournament</label>
-      <label class="f">Days at the trip <span class="opt">(everyone: fencers, parents, siblings)</span></label><div class="days" data-value="days">${dayBtns(p.days)}</div>
-      <div class="fencebox" ${p.is_fencer ? "" : "hidden"}><label class="f">Days fencing</label><div class="days fence" data-value="fencing_days">${dayBtns(p.fencing_days)}</div>
-        <p class="hint">Only the days they compete. You can change these later.</p></div>`,
-    extra: p.id ? `<div class="row-actions"><button type="button" class="link danger" data-sheet-act="remove">Remove ${esc(p.name)} from the trip</button></div>` : "",
-    onOpen: f => {
-      f.querySelector("[name=is_fencer]").onchange = e => { f.querySelector(".fencebox").hidden = !e.target.checked; };
-      f.querySelectorAll(".days").forEach(box => {
-        box._value = () => [...box.querySelectorAll("button.on")].map(b => b.dataset.day);
-        box.onclick = e => { const b = e.target.closest("button"); if (!b) return; b.classList.toggle("on"); b.setAttribute("aria-pressed", b.classList.contains("on")); };
-      });
-    },
+    title: mine ? "Add your family" : "Add a family", ok: "Next",
+    lead: "Next you'll add the people in it and which days they're there.",
+    body: `<label class="f" for="nf">Family name</label><input id="nf" name="name" placeholder="e.g. Bennett" required autocomplete="family-name">`,
   });
   if (!v) return;
-  if (v.action === "remove") {
-    if (!(await confirmSheet(`Remove ${esc(p.name)}?`, "They won't count toward any expense on this trip.", "Remove", true))) return;
-    await act(() => api(`/people/${p.id}`, { method: "DELETE" }), "Removed"); return refresh("families");
-  }
-  const fencer = v.is_fencer === "on";
-  // Fencing on a day means being there that day.
-  const body = { name: v.name, is_fencer: fencer, fencing_days: fencer ? v.fencing_days : [], days: [...new Set([...v.days, ...(fencer ? v.fencing_days : [])])] };
-  await act(() => p.id ? api(`/people/${p.id}`, { method: "PATCH", body }) : api(`/families/${p.family_id}/people`, { method: "POST", body }), p.id ? "Saved" : `${v.name} added`);
-  await refresh("families");
-  if (!p.id && (await confirmSheet(`Add someone else to the ${esc(fam)} family?`, "", "Add another"))) personSheet({ ...p, name: "", is_fencer: false, fencing_days: [] });
+  const r = await act(() => api(`/tournaments/${t.id}/families`, { method: "POST", body: { name: v.name } }));
+  if (mine) save(myKey(), String(r.id));
+  location.hash = `#/t/${t.id}/f/${r.id}${mine ? "?mine=1" : ""}`;
 }
 
-async function familySheet(id) {
-  const f = S.trip.families.find(x => x.id === id);
-  const v = await sheet({
-    title: `${esc(f.name)} family`, ok: "Save",
-    lead: final() ? "This trip is final, so only payment details can change. Reopen the trip from Settle up to change anything else." : "",
-    body: `${final() ? "" : `<label class="f" for="fn" style="margin-top:0">Family name</label><input id="fn" name="name" value="${esc(f.name)}" required>`}
-      <label class="f" for="fp" ${final() ? 'style="margin-top:0"' : ""}>How should the treasurer pay this family? <span class="opt">(optional)</span></label>
-      <input id="fp" name="pay_notes" value="${esc(f.pay_notes)}" placeholder="e.g. Venmo @lisa-chen or Zelle 555-0100">
-      <p class="hint">Only needed if they end up being owed money.</p>`,
-    extra: final() ? "" : `<div class="row-actions"><button type="button" class="link danger" data-sheet-act="remove">Remove the ${esc(f.name)} family from the trip</button></div>`,
+// ---------- manage one family ----------
+function renderFamily(fid, focusSel) {
+  const { tournament: t } = S.trip;
+  const f = S.trip.families.find(x => x.id === fid);
+  if (!f) { location.hash = `#/t/${t.id}?tab=families`; return; }
+  const ro = final();
+  const days = tournamentDays(t.start_date, t.end_date);
+  const chips = (list, attrs, { only, fence } = {}) => `<div class="days${fence ? " fence" : ""}">${days.map(d => {
+    const on = list.includes(d), off = only && !only.includes(d);
+    return `<button type="button" class="${on ? "on" : ""}" ${attrs} data-day="${d}" aria-pressed="${on}" ${ro || off ? "disabled" : ""}
+      ${off ? `title="Not there that day"` : ""}>${esc(dayShort(d))}</button>`;
+  }).join("")}</div>`;
+  const mineNote = new URLSearchParams(location.hash.split("?")[1] || "").get("mine");
+  const person = p => `
+    <div class="person-block" data-person="${p.id}">
+      <div class="person-row">
+        <input class="pname" data-pname="${p.id}" value="${esc(p.name)}" aria-label="Name" ${ro ? "disabled" : ""}>
+        <label class="switch small-switch"><input type="checkbox" data-fencer="${p.id}" ${p.is_fencer ? "checked" : ""} ${ro ? "disabled" : ""}> Fencer</label>
+        ${ro ? "" : `<button class="link danger small" data-act="remove-person" data-id="${p.id}" aria-label="Remove ${esc(p.name)}">Remove</button>`}
+      </div>
+      ${p.is_fencer ? `<div class="sub-label">Fences on <span class="opt">(only the days they compete)</span></div>${chips(p.fencing_days, `data-fence="${p.id}"`, { only: p.days, fence: true })}
+        ${!p.fencing_days.length ? `<p class="hint owe">Tick the days ${esc(p.name)} competes, or they pay nothing toward the coach's stay.</p>` : ""}` : ""}
+      ${p.own_days
+        ? `<div class="sub-label">${esc(p.name)}'s own days <span class="opt">(different from the family)</span></div>${chips(p.days, `data-own="${p.id}"`)}
+           ${ro ? "" : `<button class="link small" data-act="family-days" data-id="${p.id}">Use the family's days again</button>`}`
+        : `<div class="faint small">There ${esc(daysSummary(p.days).toLowerCase() === "whole trip" ? "the whole trip" : daysSummary(p.days))} with the family${ro ? "" : ` · <button class="link small" data-act="own-days" data-id="${p.id}">Different days?</button>`}</div>`}
+    </div>`;
+  app.innerHTML = `${bar({ back: `#/t/${t.id}?tab=families`, title: `${f.name} family`, sub: t.name, right: `<span class="saved" id="savestate" role="status" aria-live="polite"></span>` })}
+    <div class="wrap">
+      ${mineNote ? `<div class="callout good" style="margin-bottom:12px">This is your family on this phone. Add everyone who's going, then pick the days.</div>` : ""}
+      ${ro ? `<div class="callout" style="margin-bottom:12px">This trip is final, so only payment details can change. Reopen it from Settle up to change anything else.</div>` : ""}
+      <div class="stack">
+      <div class="card">
+        <label class="f" for="fam-name" style="margin-top:0">Family name</label><input id="fam-name" value="${esc(f.name)}" ${ro ? "disabled" : ""}>
+        <label class="f" for="fam-pay">If this family ends up owed money, how should the treasurer send it? <span class="opt">(optional)</span></label>
+        <input id="fam-pay" value="${esc(f.pay_notes)}" placeholder="e.g. Venmo @laura-bennett or Zelle 614-555-0123">
+      </div>
+      <div class="card"><h2>Days at the trip</h2>
+        <p class="muted small" style="margin-top:-4px">For the whole family. Anyone with different days can be changed below.</p>
+        ${chips(f.days, `data-famday="1"`)}</div>
+      <div class="card ledger"><h2>People <span class="faint small" style="font-family:inherit;font-weight:500">${f.people.length}</span></h2>
+        <p class="muted small" style="margin-top:-4px">Everyone going: fencers, parents, siblings, grandparents. Changes save as you go.</p>
+        ${f.people.map(person).join("") || `<p class="faint">Nobody added yet.</p>`}
+        ${ro ? "" : `<form id="addperson" class="addperson">
+          <input id="newname" placeholder="Add a person: first name" aria-label="New person's first name" autocomplete="off">
+          <label class="switch small-switch"><input type="checkbox" id="newfencer"> Fencer</label>
+          <button class="btn-primary btn-small">${icon("plus")} Add</button></form>`}
+      </div>
+      ${ro ? "" : `<button class="btn-danger btn-block" data-act="remove-family" data-id="${f.id}">Remove the ${esc(f.name)} family from this trip</button>`}
+      <a class="btn btn-ghost btn-block" href="#/t/${t.id}?tab=families">Done</a>
+    </div></div>`;
+  wireFamily(f);
+  if (focusSel) restoreFocus(focusSel);
+}
+
+// Every change on the Manage family screen saves immediately, then redraws.
+async function famSave(fid, call, msg = "Saved") {
+  const st = () => document.getElementById("savestate");
+  if (st()) st().textContent = "Saving…";
+  const f = focusKey();
+  try { await act(call); } catch { if (st()) st().textContent = ""; return; }
+  await loadTrip(S.trip.tournament.id);
+  renderFamily(fid, f);
+  if (st()) { st().textContent = `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
+}
+
+function wireFamily(f) {
+  const root = app, fid = f.id;
+  const toggle = (list, d) => list.includes(d) ? list.filter(x => x !== d) : [...list, d].sort();
+  const person = id => f.people.find(p => p.id === Number(id));
+  const name = document.getElementById("fam-name"), pay = document.getElementById("fam-pay");
+  if (name) name.onchange = () => name.value.trim() && famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { name: name.value } }));
+  if (pay) pay.onchange = () => famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { pay_notes: pay.value } }));
+  root.querySelectorAll("[data-famday]").forEach(b => b.onclick = () =>
+    famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { days: toggle(f.days, b.dataset.day) } })));
+  root.querySelectorAll("[data-fence]").forEach(b => b.onclick = () => {
+    const p = person(b.dataset.fence);
+    famSave(fid, () => api(`/people/${p.id}`, { method: "PATCH", body: { fencing_days: toggle(p.fencing_days, b.dataset.day) } }));
   });
-  if (!v) return;
-  if (v.action === "remove") {
-    if (!(await confirmSheet(`Remove the ${esc(f.name)} family?`, "Everyone in it is removed from this trip too.", "Remove", true))) return;
-    await act(() => api(`/families/${id}`, { method: "DELETE" }), "Removed"); return refresh("families");
-  }
-  await act(() => api(`/families/${id}`, { method: "PATCH", body: v }), "Saved");
-  refresh();
+  root.querySelectorAll("[data-own]").forEach(b => b.onclick = () => {
+    const p = person(b.dataset.own);
+    famSave(fid, () => api(`/people/${p.id}`, { method: "PATCH", body: { own_days: true, days: toggle(p.days, b.dataset.day) } }));
+  });
+  root.querySelectorAll("[data-fencer]").forEach(c => c.onchange = () =>
+    famSave(fid, () => api(`/people/${c.dataset.fencer}`, { method: "PATCH", body: { is_fencer: c.checked } })));
+  root.querySelectorAll("[data-pname]").forEach(i => i.onchange = () => i.value.trim() &&
+    famSave(fid, () => api(`/people/${i.dataset.pname}`, { method: "PATCH", body: { name: i.value } })));
+  const add = document.getElementById("addperson");
+  if (add) add.onsubmit = async ev => {
+    ev.preventDefault();
+    const n = document.getElementById("newname").value.trim();
+    if (!n) { document.getElementById("newname").focus(); return toast("Type a first name"); }
+    await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: document.getElementById("newfencer").checked } }), `${n} added`);
+    document.getElementById("newname")?.focus();
+  };
 }
 
-async function toggleCell(b) {
-  const p = S.trip.families.flatMap(f => f.people).find(x => x.id === Number(b.dataset.id));
-  const d = b.dataset.day, kind = b.dataset.kind;
-  const flip = (list, on) => on ? [...new Set([...list, d])].sort() : list.filter(x => x !== d);
-  const on = !(kind === "days" ? p.days : p.fencing_days).includes(d);
-  let days = p.days, fencing = p.fencing_days;
-  if (kind === "days") { days = flip(days, on); if (!on) fencing = flip(fencing, false); }
-  else { fencing = flip(fencing, on); if (on) days = flip(days, true); }
-  b.classList.toggle("on", on); // feels instant; the reload below confirms it
-  await act(() => api(`/people/${p.id}`, { method: "PATCH", body: { days, fencing_days: fencing } }));
-  refresh("families");
+// ---------- check a day ----------
+function renderDay(date) {
+  const { tournament: t, families } = S.trip;
+  const days = tournamentDays(t.start_date, t.end_date);
+  if (!days.includes(date)) date = days[0];
+  const there = families.map(f => ({ f, ppl: f.people.filter(p => p.days.includes(date)) }));
+  const present = there.filter(x => x.ppl.length), absent = there.filter(x => !x.ppl.length);
+  const nPeople = present.reduce((n, x) => n + x.ppl.length, 0);
+  const nFence = present.reduce((n, x) => n + x.ppl.filter(p => p.fencing_days.includes(date)).length, 0);
+  app.innerHTML = `${bar({ back: `#/t/${t.id}?tab=families`, title: "Check a day", sub: t.name })}
+    <div class="wrap"><div class="stack">
+      <div class="days">${days.map(d => `<a class="daylink ${d === date ? "on" : ""}" href="#/t/${t.id}/day/${d}" ${d === date ? 'aria-current="page"' : ""}>${esc(dayShort(d))}</a>`).join("")}</div>
+      <div class="card you" style="border-top-width:4px"><div class="eyebrow">${esc(dayLong(date))}</div>
+        <div class="big" style="font-size:22px">${plural(nPeople, "person", "people")} from ${plural(present.length, "family", "families")}</div>
+        <div class="muted small">${nFence} fencing · meals that day are split among these ${nPeople}</div></div>
+      <div class="card ledger"><h2>There this day</h2>
+        ${present.map(({ f, ppl }) => `<a class="famrow" href="#/t/${t.id}/f/${f.id}"><div class="grow"><div class="fam-name">${esc(f.name)} <span class="faint small" style="font-weight:500">${ppl.length}</span></div>
+          <div class="fam-sum day-ppl">${ppl.map(p => `<span>${esc(p.name)}${p.fencing_days.includes(date) ? ` <span class="chip fencer">fencing</span>` : ""}</span>`).join("")}</div></div>${icon("chev")}</a>`).join("") || `<p class="faint">Nobody is marked as there.</p>`}
+      </div>
+      ${absent.length ? `<div class="card"><h2>Not there this day</h2><p class="muted small" style="margin-top:-4px">If one of these was actually there, tap it to fix their days.</p>
+        ${absent.map(({ f }) => `<a class="famrow" href="#/t/${t.id}/f/${f.id}"><div class="grow"><div class="fam-name">${esc(f.name)}</div></div>${icon("chev")}</a>`).join("")}</div>` : ""}
+    </div></div>`;
 }
 
 // ---------- expense editor ----------
@@ -890,14 +986,28 @@ app.addEventListener("click", async ev => {
         if (b.dataset.id) toast(b.dataset.id === "none" ? "Got it: you're not on this trip." : `Showing the ${famName(b.dataset.id)} family. Tap "Change family" to switch.`);
         // The button that was pressed is gone after this; focus what replaced it.
         return renderTrip(tabNow(), b.dataset.id ? '[data-act="pick-me"][data-id=""]' : '[data-act="pick-me"]');
-      case "add-person": {
-        const days = tournamentDays(t.start_date, t.end_date);
-        return personSheet({ id: 0, family_id: id, name: "", is_fencer: true, days, fencing_days: [] });
+      case "add-family": return addFamily();
+      case "add-my-family": return addFamily({ mine: true });
+      case "pay-notes": location.hash = `#/t/${t.id}/f/${id}`; return;
+      case "own-days": {
+        const fid = S.trip.families.find(f => f.people.some(p => p.id === id)).id;
+        return famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { own_days: true } }), "Now has own days");
       }
-      case "edit-person": return personSheet(S.trip.families.flatMap(f => f.people).find(p => p.id === id));
-      case "edit-family": return familySheet(id);
-      case "pay-notes": return familySheet(id);
-      case "cell": return toggleCell(b);
+      case "family-days": {
+        const fid = S.trip.families.find(f => f.people.some(p => p.id === id)).id;
+        return famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { own_days: false } }), "Back on the family's days");
+      }
+      case "remove-person": {
+        const f = S.trip.families.find(f => f.people.some(p => p.id === id)), p = f.people.find(p => p.id === id);
+        if (!(await confirmSheet(`Remove ${esc(p.name)}?`, "They won't count toward any expense on this trip.", "Remove", true))) return;
+        return famSave(f.id, () => api(`/people/${id}`, { method: "DELETE" }), `${p.name} removed`);
+      }
+      case "remove-family": {
+        const f = S.trip.families.find(f => f.id === id);
+        if (!(await confirmSheet(`Remove the ${esc(f.name)} family?`, "Everyone in it is removed from this trip too.", "Remove", true))) return;
+        await act(() => api(`/families/${id}`, { method: "DELETE" }), "Family removed");
+        location.hash = `#/t/${t.id}?tab=families`; return;
+      }
       case "del-trip":
         if (!(await confirmSheet(`Delete ${esc(t.name)}?`, "It disappears for everyone, along with its expenses. For 30 days anyone can restore it from \"Recently deleted\" at the bottom of the trip list. After that it's gone for good.", "Delete trip", true))) return;
         await act(() => api(`/tournaments/${t.id}`, { method: "DELETE" }), "Trip deleted. Restore it from Recently deleted.");

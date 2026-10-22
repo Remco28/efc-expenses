@@ -129,8 +129,8 @@ async function loadTrip(env: Env, tid: number) {
     env.DB.prepare("SELECT * FROM payments WHERE tournament_id = ? ORDER BY direction, amount_cents DESC").bind(tid),
     env.DB.prepare("SELECT * FROM activity WHERE tournament_id = ? ORDER BY id DESC LIMIT 50").bind(tid),
   ]);
-  const people = (ppl.results as any[]).map(p => ({ ...p, is_fencer: !!p.is_fencer, days: JSON.parse(p.days), fencing_days: JSON.parse(p.fencing_days) }));
-  const families = (fam.results as any[]).map(f => ({ ...f, people: people.filter(p => p.family_id === f.id) }));
+  const people = (ppl.results as any[]).map(p => ({ ...p, is_fencer: !!p.is_fencer, own_days: !!p.own_days, days: JSON.parse(p.days), fencing_days: JSON.parse(p.fencing_days) }));
+  const families = (fam.results as any[]).map(f => ({ ...f, days: JSON.parse(f.days), people: people.filter(p => p.family_id === f.id) }));
   const expenses = (exp.results as any[]).map(e => ({ ...e, split: JSON.parse(e.split) }));
   return { tournament: t, families, expenses, payments: pay.results, activity: act.results };
 }
@@ -190,10 +190,12 @@ async function resetSandbox(env: Env, req: Request, tid: number, name: string) {
   ]);
   const fid: Record<string, number> = {};
   for (const [fname, pay, people] of SANDBOX.families) {
-    const f = await env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes) VALUES (?, ?, ?) RETURNING id").bind(tid, fname, pay).first<any>();
+    const famDays = [...new Set(people.flatMap(([, , days]: [string, number, string[], string[]]) => days))].sort();
+    const f = await env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes, days) VALUES (?, ?, ?, ?) RETURNING id").bind(tid, fname, pay, JSON.stringify(famDays)).first<any>();
     fid[fname] = f.id;
     await env.DB.batch(people.map(([pn, fencer, days, fdays]: [string, number, string[], string[]]) =>
-      env.DB.prepare("INSERT INTO people (family_id, name, is_fencer, days, fencing_days) VALUES (?, ?, ?, ?, ?)").bind(f.id, pn, fencer, JSON.stringify(days), JSON.stringify(fdays))));
+      env.DB.prepare("INSERT INTO people (family_id, name, is_fencer, days, fencing_days, own_days) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(f.id, pn, fencer, JSON.stringify(days), JSON.stringify(fdays), days.length === famDays.length ? 0 : 1)));
   }
   const everyone = JSON.stringify(Object.fromEntries(Object.values(fid).map(id => [id, null])));
   const stamp = now();
@@ -396,13 +398,17 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     return json({ ok: true });
   }
 
-  // Families and people
+  // Families and people. Days are set per family; everyone follows them unless
+  // they have their own (own_days). Fencing days always stay within the days a
+  // person is there. people.days stays the source of truth for every split.
   if ((m = path.match(/^\/tournaments\/(\d+)\/families$/)) && method === "POST") {
     const tid = Number(m[1]);
     await openTournament(env, tid);
     const b = await body(req);
     if (!str(b.name)) throw new HttpError(400, "Give the family a name");
-    const r = await env.DB.prepare("INSERT INTO families (tournament_id, name) VALUES (?, ?) RETURNING id").bind(tid, str(b.name)).first<any>();
+    const all = await allowedDays(env, tid);
+    const days = b.days == null ? [...all].sort() : cleanDays(b.days, all);
+    const r = await env.DB.prepare("INSERT INTO families (tournament_id, name, days) VALUES (?, ?, ?) RETURNING id").bind(tid, str(b.name), JSON.stringify(days)).first<any>();
     await log(env, tid, name, `added the ${str(b.name)} family`);
     return json({ id: r.id }, 201);
   }
@@ -412,7 +418,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (method === "PATCH") {
       const b = await body(req);
       const f = await env.DB.prepare("SELECT * FROM families WHERE id = ?").bind(fid).first<any>();
-      if (b.pay_notes != null) {
+      if (b.pay_notes != null && str(b.pay_notes, 300) !== f.pay_notes) {
         // How to pay this family; editable after finalizing, since that's when it's needed.
         await env.DB.prepare("UPDATE families SET pay_notes = ? WHERE id = ?").bind(str(b.pay_notes, 300), fid).run();
         await log(env, tid, name, `updated how to pay the ${f.name} family`);
@@ -422,6 +428,17 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         if (!str(b.name)) throw new HttpError(400, "Give the family a name");
         await env.DB.prepare("UPDATE families SET name = ? WHERE id = ?").bind(str(b.name), fid).run();
         await log(env, tid, name, `renamed the ${f.name} family to ${str(b.name)}`);
+      }
+      if (b.days != null) {
+        await openTournament(env, tid);
+        const days = cleanDays(b.days, await allowedDays(env, tid));
+        const { results: ppl } = await env.DB.prepare("SELECT * FROM people WHERE family_id = ? AND own_days = 0").bind(fid).all<any>();
+        await env.DB.batch([
+          env.DB.prepare("UPDATE families SET days = ? WHERE id = ?").bind(JSON.stringify(days), fid),
+          ...ppl.map(p => env.DB.prepare("UPDATE people SET days = ?, fencing_days = ? WHERE id = ?")
+            .bind(JSON.stringify(days), JSON.stringify(JSON.parse(p.fencing_days).filter((d: string) => days.includes(d))), p.id)),
+        ]);
+        await log(env, tid, name, `set the ${f.name} family's days`);
       }
       return json({ ok: true });
     }
@@ -446,27 +463,34 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     await openTournament(env, tid);
     const b = await body(req);
     if (!str(b.name)) throw new HttpError(400, "Give the person a name");
-    const days = await allowedDays(env, tid);
+    const all = await allowedDays(env, tid);
+    const f = await env.DB.prepare("SELECT days FROM families WHERE id = ?").bind(fid).first<any>();
+    const own = !!b.own_days;
+    const days = own ? cleanDays(b.days, all) : JSON.parse(f.days);
     const fencer = !!b.is_fencer;
-    const r = await env.DB.prepare("INSERT INTO people (family_id, name, is_fencer, days, fencing_days) VALUES (?, ?, ?, ?, ?) RETURNING id")
-      .bind(fid, str(b.name), fencer ? 1 : 0, JSON.stringify(cleanDays(b.days, days)), JSON.stringify(fencer ? cleanDays(b.fencing_days, days) : [])).first<any>();
+    // A new fencer starts fencing every day they're there; it's one tap to take days off.
+    const fencing = !fencer ? [] : b.fencing_days == null ? days : cleanDays(b.fencing_days, all).filter((d: string) => days.includes(d));
+    const r = await env.DB.prepare("INSERT INTO people (family_id, name, is_fencer, days, fencing_days, own_days) VALUES (?, ?, ?, ?, ?, ?) RETURNING id")
+      .bind(fid, str(b.name), fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(fencing), own ? 1 : 0).first<any>();
     await log(env, tid, name, `added ${str(b.name)}${fencer ? " (fencer)" : ""}`);
     return json({ id: r.id }, 201);
   }
   if ((m = path.match(/^\/people\/(\d+)$/))) {
     const pid = Number(m[1]);
-    const p = await env.DB.prepare("SELECT p.*, f.tournament_id FROM people p JOIN families f ON f.id = p.family_id WHERE p.id = ?").bind(pid).first<any>();
+    const p = await env.DB.prepare("SELECT p.*, f.tournament_id, f.days AS family_days FROM people p JOIN families f ON f.id = p.family_id WHERE p.id = ?").bind(pid).first<any>();
     if (!p) throw new HttpError(404, "No such person");
     await openTournament(env, p.tournament_id);
     if (method === "PATCH") {
       const b = await body(req);
-      const days = await allowedDays(env, p.tournament_id);
+      const all = await allowedDays(env, p.tournament_id);
+      const own = b.own_days == null ? !!p.own_days : !!b.own_days;
+      // Back to family days, or own days as given (or as they were).
+      const days: string[] = !own ? JSON.parse(p.family_days) : b.days == null ? JSON.parse(p.days) : cleanDays(b.days, all);
       const fencer = b.is_fencer == null ? !!p.is_fencer : !!b.is_fencer;
-      await env.DB.prepare("UPDATE people SET name = ?, is_fencer = ?, days = ?, fencing_days = ? WHERE id = ?").bind(
-        str(b.name) || p.name, fencer ? 1 : 0,
-        b.days == null ? p.days : JSON.stringify(cleanDays(b.days, days)),
-        !fencer ? "[]" : b.fencing_days == null ? p.fencing_days : JSON.stringify(cleanDays(b.fencing_days, days)),
-        pid).run();
+      const wasFencing: string[] = JSON.parse(p.fencing_days);
+      const fencing = !fencer ? [] : (b.fencing_days == null ? (!p.is_fencer ? days : wasFencing) : cleanDays(b.fencing_days, all)).filter(d => days.includes(d));
+      await env.DB.prepare("UPDATE people SET name = ?, is_fencer = ?, days = ?, fencing_days = ?, own_days = ? WHERE id = ?").bind(
+        str(b.name) || p.name, fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(fencing), own ? 1 : 0, pid).run();
       await log(env, p.tournament_id, name, `updated ${str(b.name) || p.name}`);
       return json({ ok: true });
     }

@@ -413,3 +413,33 @@ table.bal tr:last-child td.n b { display: inline-block; border-top: 1px solid va
 .practice { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; padding: 10px 14px;
   background: var(--warn-wash); border: 1px dashed var(--gold-deep); border-radius: var(--radius); font-size: 14px; color: var(--ink); }
 .practice > div { flex: 1 1 240px; }
+
+/* ---------- families: summary list, manage screen, day check ---------- */
+.famrow { display: flex; gap: 10px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--rule); text-decoration: none; color: inherit; }
+.famrow:last-child { border-bottom: none; }
+.famrow:hover .fam-name { color: var(--link); }
+.famrow .grow { flex: 1; min-width: 0; }
+.famrow > svg { color: var(--ink-3); }
+.fam-name { font-weight: 650; font-size: 16px; }
+.fam-sum { font-size: 13px; color: var(--ink-2); margin-top: 1px; }
+.fam-flag { font-size: 13px; color: var(--owe); margin-top: 3px; display: flex; gap: 4px; align-items: center; }
+.fam-flag svg { width: 14px; height: 14px; }
+a.daylink { display: inline-flex; align-items: center; min-height: 38px; padding: 4px 12px; border: 1px solid var(--rule); border-radius: var(--radius); text-decoration: none; color: var(--ink); font-weight: 600; font-size: 14px; background: var(--paper); }
+a.daylink:hover { border-color: var(--link); }
+a.daylink.on { background: var(--navy-2); border-color: var(--navy-2); color: #fff; }
+.person-block { padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.person-block:last-of-type { border-bottom: none; }
+.person-row { display: flex; gap: 10px; align-items: center; }
+.person-row .pname { flex: 1; min-width: 0; font-weight: 600; min-height: 42px; }
+.switch.small-switch { margin-top: 0; font-weight: 600; font-size: 14px; white-space: nowrap; }
+.sub-label { font-size: 13px; font-weight: 600; color: var(--ink-2); margin: 10px 0 6px; }
+.days button:disabled { opacity: .35; text-decoration: line-through; cursor: not-allowed; }
+.addperson { display: flex; gap: 8px; align-items: center; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--rule); flex-wrap: wrap; }
+.addperson input:not([type]) { flex: 1 1 160px; min-height: 42px; }
+.saved { font-size: 13px; font-weight: 600; color: var(--gold); white-space: nowrap; }
+.card.you .pills .addmine, .pills .addmine { border-style: dashed; border-color: var(--gold); color: var(--gold); background: transparent; }
+input[type=search] { font: inherit; font-size: 16px; width: 100%; padding: 11px 12px; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); color: var(--ink); min-height: 46px; -webkit-appearance: none; appearance: none; }
+.day-ppl { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; }
+.day-ppl > span { white-space: nowrap; }
+.card.you select { background: #fff; color: var(--ink); }
+.pickrow select { width: 100%; }
