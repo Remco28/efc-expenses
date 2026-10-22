@@ -406,8 +406,8 @@ function tabFamilies(el) {
     ${families.map(famCard).join("") || `<div class="card empty"><div class="ic">${icon("users")}</div><b>No families yet</b>Add each family going on this trip, then the people in it.</div>`}
     ${ro ? "" : `<form class="card" id="addfam"><label class="f" for="fname" style="margin-top:0">Add a family</label>
       <div style="display:flex;gap:8px"><input id="fname" placeholder="Family name, e.g. Okafor" required><button class="btn-primary">Add</button></div></form>`}
-    ${people.length ? `<div class="card"><h2>Who's there each day</h2><p class="muted small">Tap a square to switch it on or off. Meals are split among the people there that day.</p>${grid(false)}</div>` : ""}
-    ${people.some(p => p.is_fencer) ? `<div class="card"><h2>Who fences each day</h2><p class="muted small">Only the days each kid competes. These decide their share of the coach's hotel and meals.</p>${grid(true)}</div>` : ""}
+    ${people.length ? `<div class="card"><h2>Who's there each day</h2><p class="muted small">Everyone on the trip: fencers, parents, siblings, grandparents. Tick each day they're there. Meals are split among everyone there that day, and a family only shares costs from days someone in it was there.</p>${grid(false)}</div>` : ""}
+    ${people.some(p => p.is_fencer) ? `<div class="card"><h2>Who fences each day</h2><p class="muted small">Fencers only. Tick just the days each kid competes (not travel days). These decide each family's share of the coach's hotel and meals.</p>${grid(true)}</div>` : ""}
     ${ro ? "" : `<details class="card"><summary>Trip details</summary>
       <form id="tripedit">
         <label class="f" for="en">Tournament</label><input id="en" value="${esc(t.name)}" required>
@@ -443,7 +443,7 @@ async function personSheet(p) {
     title: p.id ? `Edit ${esc(p.name)}` : `Add someone to the ${esc(fam)} family`, ok: p.id ? "Save" : "Add person",
     body: `<label class="f" for="pn" style="margin-top:0">Name</label><input id="pn" name="name" value="${esc(p.name)}" placeholder="First name" required>
       <label class="switch"><input type="checkbox" name="is_fencer" ${p.is_fencer ? "checked" : ""}> Fencing at this tournament</label>
-      <label class="f">Days at the trip</label><div class="days" data-value="days">${dayBtns(p.days)}</div>
+      <label class="f">Days at the trip <span class="opt">(everyone: fencers, parents, siblings)</span></label><div class="days" data-value="days">${dayBtns(p.days)}</div>
       <div class="fencebox" ${p.is_fencer ? "" : "hidden"}><label class="f">Days fencing</label><div class="days fence" data-value="fencing_days">${dayBtns(p.fencing_days)}</div>
         <p class="hint">Only the days they compete. You can change these later.</p></div>`,
     extra: p.id ? `<div class="row-actions"><button type="button" class="link danger" data-sheet-act="remove">Remove ${esc(p.name)} from the trip</button></div>` : "",
