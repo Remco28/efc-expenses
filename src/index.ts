@@ -60,10 +60,39 @@ async function log(env: Env, tid: number | null, name: string, what: string) {
     .bind(tid, now(), name, what).run();
 }
 
-async function tournament(env: Env, id: number) {
+const KEEP_DELETED_DAYS = 30;
+
+// A deleted trip is invisible to everything except "Recently deleted" and restore.
+async function tournament(env: Env, id: number, { includeDeleted = false } = {}) {
   const t = await env.DB.prepare("SELECT * FROM tournaments WHERE id = ?").bind(id).first<any>();
-  if (!t) throw new HttpError(404, "No such tournament");
+  if (!t || (t.deleted_at && !includeDeleted)) throw new HttpError(404, "This trip doesn't exist or was deleted");
   return t;
+}
+
+// Remove a trip for good: its receipts in R2, then its rows (children first,
+// because expenses point at families).
+async function purgeTrip(env: Env, tid: number) {
+  let cursor: string | undefined;
+  do {
+    const list = await env.RECEIPTS.list({ prefix: `t${tid}/`, cursor });
+    if (list.objects.length) await env.RECEIPTS.delete(list.objects.map(o => o.key));
+    cursor = list.truncated ? list.cursor : undefined;
+  } while (cursor);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM payments WHERE tournament_id = ?").bind(tid),
+    env.DB.prepare("DELETE FROM expenses WHERE tournament_id = ?").bind(tid),
+    env.DB.prepare("DELETE FROM families WHERE tournament_id = ?").bind(tid),
+    env.DB.prepare("DELETE FROM activity WHERE tournament_id = ?").bind(tid),
+    env.DB.prepare("DELETE FROM tournaments WHERE id = ?").bind(tid),
+  ]);
+}
+
+// Trips deleted more than 30 days ago go for good. Runs when the trip list is
+// opened (no scheduler needed); one per request keeps each request light.
+async function purgeExpired(env: Env) {
+  const cutoff = new Date(Date.now() - KEEP_DELETED_DAYS * 864e5).toISOString();
+  const old = await env.DB.prepare("SELECT id FROM tournaments WHERE deleted_at IS NOT NULL AND deleted_at < ? LIMIT 1").bind(cutoff).first<any>();
+  if (old) await purgeTrip(env, old.id);
 }
 
 async function openTournament(env: Env, id: number) {
@@ -254,8 +283,16 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
               (SELECT COUNT(*) FROM families f WHERE f.tournament_id = t.id) AS family_count,
               (SELECT COUNT(*) FROM payments p WHERE p.tournament_id = t.id) AS pay_total,
               (SELECT COUNT(*) FROM payments p WHERE p.tournament_id = t.id AND p.paid_at IS NOT NULL) AS pay_done
-       FROM tournaments t ORDER BY t.start_date DESC, t.id DESC`).all();
+       FROM tournaments t WHERE t.deleted_at IS NULL ORDER BY t.start_date DESC, t.id DESC`).all();
+    await purgeExpired(env);
     return json(results);
+  }
+  if (path === "/tournaments/deleted" && method === "GET") {
+    const { results } = await env.DB.prepare(
+      `SELECT id, name, location, start_date, end_date, deleted_at, deleted_by,
+              (SELECT COUNT(*) FROM expenses e WHERE e.tournament_id = t.id) AS expense_count
+       FROM tournaments t WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`).all();
+    return json({ keep_days: KEEP_DELETED_DAYS, trips: results });
   }
   if (path === "/tournaments" && method === "POST") {
     const b = await body(req);
@@ -282,11 +319,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       return json({ ok: true });
     }
     if (method === "DELETE") {
-      if ((await tournament(env, tid)).is_sandbox) throw new HttpError(409, "The practice trip can't be deleted. Reset it instead.");
-      await openTournament(env, tid);
-      const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM expenses WHERE tournament_id = ?").bind(tid).first<any>();
-      if (n.n > 0) throw new HttpError(409, "Delete its expenses first");
-      await env.DB.prepare("DELETE FROM tournaments WHERE id = ?").bind(tid).run();
+      const t = await tournament(env, tid);
+      if (t.is_sandbox) throw new HttpError(409, "The practice trip can't be deleted. Reset it instead.");
+      if (t.status === "final") throw new HttpError(409, "This trip is finalized. Reopen it first if you really want to delete it.");
+      await env.DB.prepare("UPDATE tournaments SET deleted_at = ?, deleted_by = ? WHERE id = ?").bind(now(), name, tid).run();
+      await log(env, tid, name, `deleted the trip (it can be restored for ${KEEP_DELETED_DAYS} days)`);
       return json({ ok: true });
     }
   }
@@ -305,6 +342,14 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       env.DB.prepare("UPDATE tournaments SET status = 'final', finalized_at = ?, finalized_by = ? WHERE id = ?").bind(now(), name, tid),
     ]);
     await log(env, tid, name, `finalized ${t.name}`);
+    return json({ ok: true });
+  }
+  if ((m = path.match(/^\/tournaments\/(\d+)\/restore$/)) && method === "POST") {
+    const tid = Number(m[1]);
+    const t = await tournament(env, tid, { includeDeleted: true });
+    if (!t.deleted_at) return json({ ok: true });
+    await env.DB.prepare("UPDATE tournaments SET deleted_at = NULL, deleted_by = NULL WHERE id = ?").bind(tid).run();
+    await log(env, tid, name, "restored the trip");
     return json({ ok: true });
   }
   if ((m = path.match(/^\/tournaments\/(\d+)\/reset-sandbox$/)) && method === "POST") {

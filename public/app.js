@@ -131,6 +131,7 @@ async function show() {
       return renderTrip(q.get("tab") || "expenses");
     }
     S.draft = null;
+    if (parts[0] === "deleted") return renderDeleted(await api("/tournaments/deleted"));
     S.list = await api("/tournaments");
     renderHome();
   } catch (e) {
@@ -206,6 +207,20 @@ function renderHome() {
       <div class="head"><h2>Trips</h2><button class="btn-primary btn-small" data-act="new-trip">${icon("plus")} New trip</button></div>
       ${S.list.length ? cards : `<div class="card empty"><div class="ic">${icon("flag")}</div><b>No trips yet</b>Start one for the next tournament. Anyone on the team can.
         <div class="row-actions"><button class="btn-primary" data-act="new-trip">${icon("plus")} New trip</button></div></div>`}
+      <p class="hint" style="text-align:center"><a href="#/deleted">Recently deleted trips</a></p>
+    </div></div>`;
+}
+
+function renderDeleted({ keep_days, trips }) {
+  const gone = d => new Date(new Date(d).getTime() + keep_days * 864e5).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  app.innerHTML = `${bar({ back: "#/", title: "Recently deleted", sub: `Trips stay here for ${keep_days} days` })}
+    <div class="wrap"><div class="stack">
+      <p class="muted">Deleted trips can be restored exactly as they were for ${keep_days} days. After that, the trip and its receipts are removed for good.</p>
+      ${trips.length ? trips.map(t => `<div class="card"><div class="head" style="margin-bottom:4px"><h2 style="border:0;padding:0;margin:0">${esc(t.name)}</h2>
+          <button class="btn-ghost btn-small" data-act="restore" data-id="${t.id}">Restore</button></div>
+        <div class="muted small">${esc(range(t))} · ${plural(t.expense_count, "expense", "expenses")}</div>
+        <div class="faint small">Deleted by ${esc(t.deleted_by || "someone")} on ${new Date(t.deleted_at).toLocaleDateString()} · removed for good on ${gone(t.deleted_at)}</div></div>`).join("")
+      : `<div class="card empty"><b>Nothing here</b>No trips have been deleted recently.</div>`}
     </div></div>`;
 }
 
@@ -400,7 +415,7 @@ function tabFamilies(el) {
         <div class="two"><div><label class="f" for="es">First day</label><input id="es" type="date" value="${t.start_date}" required></div>
           <div><label class="f" for="ee">Last day</label><input id="ee" type="date" value="${t.end_date}" required></div></div>
         <p class="hint">Shortening the trip removes the dropped days from everyone's attendance.</p>
-        <div class="row-actions"><button class="btn-primary">Save details</button>${S.trip.expenses.length ? "" : `<button type="button" class="btn-danger" data-act="del-trip">Delete trip</button>`}</div>
+        <div class="row-actions"><button class="btn-primary">Save details</button>${t.is_sandbox ? "" : `<button type="button" class="btn-danger" data-act="del-trip">Delete trip</button>`}</div>
       </form></details>`}`;
   const af = document.getElementById("addfam");
   if (af) af.onsubmit = async ev => {
@@ -884,8 +899,12 @@ app.addEventListener("click", async ev => {
       case "pay-notes": return familySheet(id);
       case "cell": return toggleCell(b);
       case "del-trip":
-        if (!(await confirmSheet("Delete this trip?", "This can't be undone.", "Delete", true))) return;
-        await act(() => api(`/tournaments/${t.id}`, { method: "DELETE" })); location.hash = "#/"; return;
+        if (!(await confirmSheet(`Delete ${esc(t.name)}?`, "It disappears for everyone, along with its expenses. For 30 days anyone can restore it from \"Recently deleted\" at the bottom of the trip list. After that it's gone for good.", "Delete trip", true))) return;
+        await act(() => api(`/tournaments/${t.id}`, { method: "DELETE" }), "Trip deleted. Restore it from Recently deleted.");
+        location.hash = "#/"; return;
+      case "restore":
+        await act(() => api(`/tournaments/${id}/restore`, { method: "POST" }), "Trip restored");
+        location.hash = `#/t/${id}`; return;
       case "del-expense":
         if (!(await confirmSheet("Delete this expense?", "It's removed for everyone, along with its receipt.", "Delete", true))) return;
         await act(() => api(`/expenses/${id}`, { method: "DELETE" }), "Deleted"); S.draft = null; location.hash = `#/t/${t.id}`; return;
