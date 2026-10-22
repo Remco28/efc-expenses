@@ -3,7 +3,8 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 // @ts-ignore - plain JS module shared with the browser
 import { BASES, CATEGORIES, balances, treasurerPlan } from "../public/split.js";
-import { SANDBOX } from "./sandbox";
+// @ts-ignore - plain JS module shared with the seeding script
+import { SANDBOX } from "./sandbox.js";
 
 interface Env {
   DB: D1Database;
@@ -162,7 +163,7 @@ async function resetSandbox(env: Env, req: Request, tid: number, name: string) {
   for (const [fname, pay, people] of SANDBOX.families) {
     const f = await env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes) VALUES (?, ?, ?) RETURNING id").bind(tid, fname, pay).first<any>();
     fid[fname] = f.id;
-    await env.DB.batch(people.map(([pn, fencer, days, fdays]) =>
+    await env.DB.batch(people.map(([pn, fencer, days, fdays]: [string, number, string[], string[]]) =>
       env.DB.prepare("INSERT INTO people (family_id, name, is_fencer, days, fencing_days) VALUES (?, ?, ?, ?, ?)").bind(f.id, pn, fencer, JSON.stringify(days), JSON.stringify(fdays))));
   }
   const everyone = JSON.stringify(Object.fromEntries(Object.values(fid).map(id => [id, null])));
