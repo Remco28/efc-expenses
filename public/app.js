@@ -34,6 +34,8 @@ const ICON = {
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>', edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', sword: '<path d="M14 4h6v6L9 21l-2-2-2 2-2-2 2-2-2-2L14 4z"/>',
   flag: '<path d="M5 21V4h11l-2 4 2 4H5"/>',
+  doc: '<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/>', scale: '<path d="M12 4v16M5 20h14M4 9l3-5 3 5a3 3 0 01-6 0zM14 9l3-5 3 5a3 3 0 01-6 0zM7 4h10"/>',
+  play: '<circle cx="12" cy="12" r="9"/><path d="M10 8l6 4-6 4z"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>',
   whistle: '<circle cx="8" cy="14" r="5"/><path d="M11 10l10-4v5l-8 3"/><circle cx="8" cy="14" r="1.3"/>',
 };
 const icon = (n, cls = "i") => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
@@ -101,6 +103,60 @@ function sheet({ title, lead = "", body = "", ok = "Save", okClass = "btn-primar
 }
 const confirmSheet = (title, lead, ok = "Yes", danger = false) => sheet({ title, lead, ok, okClass: danger ? "btn-danger" : "btn-primary" });
 
+// ---------- first-visit tour ----------
+// Shown once per phone after the welcome; "How it works" on the trip list
+// opens it again. The X, a tap outside the card, or Escape closes it.
+const TOUR = [
+  { icon: "flag", title: "Welcome to EFC Trip Expenses",
+    text: "One place for the team's shared travel costs: meals, the coach's travel, transport. It works out who owes what, fairly. Here's how it works in a minute." },
+  { icon: "users", title: "Pick your trip, then your family",
+    text: "Open a trip and tell it which family you are. From then on, the top of the trip shows what your family owes or gets back. That choice only changes what your phone shows." },
+  { icon: "edit", title: "Manage your family",
+    text: "In Families, open your family to add everyone going: fencers, parents, siblings. Set the days you're there, and the days each kid fences. Changes save as you tap." },
+  { icon: "camera", title: "Paid for something? Add it on the spot",
+    text: "Tap Add expense and take a photo of the receipt. The app reads it and fills in the form. Check it, pick who's sharing, and save. No receipt? Just type it in." },
+  { icon: "scale", title: "Split by what it was for",
+    text: "Meals are shared by the people there that day. The coach's travel is shared per fencer, and the coach's hotel by fencing days. Van and parking are shared per family. You'll always see each family's part." },
+  { icon: "wallet", title: "One treasurer, one payment each",
+    text: "A parent volunteers as treasurer. When the trip is finalized, each family that owes sends one payment to the treasurer, who pays back anyone who's owed and ticks it all off." },
+  { icon: "doc", title: "A record for the club",
+    text: "A finished trip downloads as a PDF: a one-page summary, each family's statement, and a copy of every receipt." },
+  { icon: "play", title: "Try it safely first",
+    text: "The practice trip on the trip list is a sandbox. Add expenses, finalize, tick payments, break things. Reset puts it all back." },
+];
+
+function showTour(start = 0) {
+  document.querySelector(".tour-back")?.remove();
+  let i = start;
+  const back = document.createElement("div");
+  back.className = "tour-back";
+  back.innerHTML = `<div class="tour" role="dialog" aria-modal="true" aria-labelledby="tour-t" aria-describedby="tour-x">
+    <button class="tour-close" data-tour="close" aria-label="Close the tour">${icon("x")}</button><div class="tour-body"></div></div>`;
+  const prev = document.activeElement;
+  const close = () => { save("efc-tour-seen", "1"); back.remove(); document.removeEventListener("keydown", onKey); prev?.focus?.(); };
+  const onKey = e => { if (e.key === "Escape") close(); else if (e.key === "ArrowRight" && i < TOUR.length - 1) { i++; draw(); } else if (e.key === "ArrowLeft" && i > 0) { i--; draw(); } };
+  const draw = () => {
+    const p = TOUR[i], last = i === TOUR.length - 1;
+    back.querySelector(".tour-body").innerHTML = `
+      <div class="tour-ic">${icon(p.icon)}</div>
+      <div class="tour-step">${i + 1} of ${TOUR.length}</div>
+      <h2 id="tour-t">${p.title}</h2><p id="tour-x">${p.text}</p>
+      <div class="tour-dots" aria-hidden="true">${TOUR.map((_, j) => `<span class="${j === i ? "on" : ""}"></span>`).join("")}</div>
+      <div class="tour-nav">${i ? `<button class="btn-ghost" data-tour="prev">Back</button>` : `<button class="btn-ghost" data-tour="close">Skip</button>`}
+        <button class="btn-primary" data-tour="${last ? "close" : "next"}">${last ? "Get started" : "Next"}</button></div>`;
+    back.querySelector(`[data-tour="${last ? "close" : "next"}"]:not(.tour-close)`)?.focus();
+  };
+  back.addEventListener("click", e => {
+    if (e.target === back) return close();
+    const b = e.target.closest("[data-tour]"); if (!b) return;
+    if (b.dataset.tour === "close") close();
+    else { i += b.dataset.tour === "next" ? 1 : -1; draw(); }
+  });
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(back);
+  draw();
+}
+
 // ---------- routing ----------
 window.addEventListener("hashchange", route);
 document.addEventListener("visibilitychange", () => { if (!document.hidden && !S.draft && !document.querySelector(".sheet-back")) route(); });
@@ -136,6 +192,7 @@ async function show() {
     if (parts[0] === "deleted") return renderDeleted(await api("/tournaments/deleted"));
     S.list = await api("/tournaments");
     renderHome();
+    if (!load("efc-tour-seen")) showTour();
   } catch (e) {
     if (e instanceof AuthError) return renderLogin();
     app.innerHTML = `${bar({ title: "EFC Trip Expenses" })}<div class="wrap"><div class="card empty"><b>Couldn't load this page</b>${esc(e.message)}<div class="row-actions"><a class="btn btn-ghost" href="#/">Back to all trips</a></div></div></div>`;
@@ -206,7 +263,7 @@ function renderHome() {
     </a>`).join("");
   app.innerHTML = `${bar({ title: "EFC Trip Expenses", sub: "Team travel costs", right: `<button class="who-btn" data-act="rename" title="Change your name">${esc(S.name)}</button>` })}
     <div class="wrap"><div class="stack">
-      <div class="head"><h2>Trips</h2><button class="btn-primary btn-small" data-act="new-trip">${icon("plus")} New trip</button></div>
+      <div class="head"><h2>Trips</h2><span style="display:flex;gap:8px"><button class="btn-ghost btn-small" data-act="tour">How it works</button><button class="btn-primary btn-small" data-act="new-trip">${icon("plus")} New trip</button></span></div>
       ${S.list.length ? cards : `<div class="card empty"><div class="ic">${icon("flag")}</div><b>No trips yet</b>Start one for the next tournament. Anyone on the team can.
         <div class="row-actions"><button class="btn-primary" data-act="new-trip">${icon("plus")} New trip</button></div></div>`}
       <p class="hint" style="text-align:center"><a href="#/deleted">Recently deleted trips</a></p>
@@ -483,7 +540,8 @@ function renderFamily(fid, focusSel) {
   if (!f) { location.hash = `#/t/${t.id}?tab=families`; return; }
   const ro = final();
   const days = tournamentDays(t.start_date, t.end_date);
-  const chips = (list, attrs, { only, fence } = {}) => `<div class="days${fence ? " fence" : ""}">${days.map(d => {
+  const chips = (list, attrs, { only, fence, label } = {}) => `<div class="days-sum" aria-hidden="true">${esc(daysSummary(list))}</div>
+    <div class="days${fence ? " fence" : ""}" role="group" aria-label="${esc(label || "Days")}">${days.map(d => {
     const on = list.includes(d), off = only && !only.includes(d);
     return `<button type="button" class="${on ? "on" : ""}" ${attrs} data-day="${d}" aria-pressed="${on}" ${ro || off ? "disabled" : ""}
       ${off ? `title="Not there that day"` : ""}>${esc(dayShort(d))}</button>`;
@@ -492,14 +550,14 @@ function renderFamily(fid, focusSel) {
   const person = p => `
     <div class="person-block" data-person="${p.id}">
       <div class="person-row">
-        <input class="pname" data-pname="${p.id}" value="${esc(p.name)}" aria-label="Name" ${ro ? "disabled" : ""}>
+        <input class="pname" data-pname="${p.id}" value="${esc(p.name)}" aria-label="${esc(p.name)}'s name" ${ro ? "disabled" : ""}>
         <label class="switch small-switch"><input type="checkbox" data-fencer="${p.id}" ${p.is_fencer ? "checked" : ""} ${ro ? "disabled" : ""}> Fencer</label>
         ${ro ? "" : `<button class="link danger small" data-act="remove-person" data-id="${p.id}" aria-label="Remove ${esc(p.name)}">Remove</button>`}
       </div>
-      ${p.is_fencer ? `<div class="sub-label">Fences on <span class="opt">(only the days they compete)</span></div>${chips(p.fencing_days, `data-fence="${p.id}"`, { only: p.days, fence: true })}
+      ${p.is_fencer ? `<div class="sub-label">Fences on <span class="opt">(only the days they compete)</span></div>${chips(p.fencing_days, `data-fence="${p.id}"`, { only: p.days, fence: true, label: `${p.name} fences on` })}
         ${!p.fencing_days.length ? `<p class="hint owe">Tick the days ${esc(p.name)} competes, or they pay nothing toward the coach's stay.</p>` : ""}` : ""}
       ${p.own_days
-        ? `<div class="sub-label">${esc(p.name)}'s own days <span class="opt">(different from the family)</span></div>${chips(p.days, `data-own="${p.id}"`)}
+        ? `<div class="sub-label">${esc(p.name)}'s own days <span class="opt">(different from the family)</span></div>${chips(p.days, `data-own="${p.id}"`, { label: `${p.name}'s own days` })}
            ${ro ? "" : `<button class="link small" data-act="family-days" data-id="${p.id}">Use the family's days again</button>`}`
         : `<div class="faint small">There ${esc(daysSummary(p.days).toLowerCase() === "whole trip" ? "the whole trip" : daysSummary(p.days))} with the family${ro ? "" : ` · <button class="link small" data-act="own-days" data-id="${p.id}">Different days?</button>`}</div>`}
     </div>`;
@@ -515,7 +573,7 @@ function renderFamily(fid, focusSel) {
       </div>
       <div class="card"><h2>Days at the trip</h2>
         <p class="muted small" style="margin-top:-4px">For the whole family. Anyone with different days can be changed below.</p>
-        ${chips(f.days, `data-famday="1"`)}</div>
+        ${chips(f.days, `data-famday="1"`, { label: `${f.name} family's days` })}</div>
       <div class="card ledger"><h2>People <span class="faint small" style="font-family:inherit;font-weight:500">${f.people.length}</span></h2>
         <p class="muted small" style="margin-top:-4px">Everyone going: fencers, parents, siblings, grandparents. Changes save as you go.</p>
         ${f.people.map(person).join("") || `<p class="faint">Nobody added yet.</p>`}
@@ -531,33 +589,45 @@ function renderFamily(fid, focusSel) {
   if (focusSel) restoreFocus(focusSel);
 }
 
-// Every change on the Manage family screen saves immediately, then redraws.
-async function famSave(fid, call, msg = "Saved") {
+// Every change on the Manage family screen saves immediately. Saves run one
+// after another (quick taps queue up), and the screen redraws once they're done.
+let famQueue = Promise.resolve(), famPending = 0;
+function famSave(fid, call, msg = "Saved", focusAfter) {
   const st = () => document.getElementById("savestate");
   if (st()) st().textContent = "Saving…";
-  const f = focusKey();
-  try { await act(call); } catch { if (st()) st().textContent = ""; return; }
-  await loadTrip(S.trip.tournament.id);
-  renderFamily(fid, f);
-  if (st()) { st().textContent = `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
+  famPending++;
+  famQueue = famQueue.then(() => act(call)).catch(() => {}).then(async () => {
+    if (--famPending) return;
+    const f = focusAfter || focusKey();
+    await loadTrip(S.trip.tournament.id);
+    renderFamily(fid, f);
+    if (st()) { st().textContent = `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
+  });
+  return famQueue;
 }
 
 function wireFamily(f) {
   const root = app, fid = f.id;
-  const toggle = (list, d) => list.includes(d) ? list.filter(x => x !== d) : [...list, d].sort();
-  const person = id => f.people.find(p => p.id === Number(id));
+  // Flip the tapped button now, then send what the whole row shows, so quick
+  // taps each build on the last instead of on the page as first drawn.
+  const tap = (b, sel) => {
+    b.classList.toggle("on"); b.setAttribute("aria-pressed", b.classList.contains("on"));
+    return [...root.querySelectorAll(sel)].filter(x => x.classList.contains("on")).map(x => x.dataset.day);
+  };
   const name = document.getElementById("fam-name"), pay = document.getElementById("fam-pay");
   if (name) name.onchange = () => name.value.trim() && famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { name: name.value } }));
   if (pay) pay.onchange = () => famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { pay_notes: pay.value } }));
-  root.querySelectorAll("[data-famday]").forEach(b => b.onclick = () =>
-    famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { days: toggle(f.days, b.dataset.day) } })));
+  root.querySelectorAll("[data-famday]").forEach(b => b.onclick = () => {
+    const days = tap(b, "[data-famday]");
+    famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { days } }));
+  });
   root.querySelectorAll("[data-fence]").forEach(b => b.onclick = () => {
-    const p = person(b.dataset.fence);
-    famSave(fid, () => api(`/people/${p.id}`, { method: "PATCH", body: { fencing_days: toggle(p.fencing_days, b.dataset.day) } }));
+    const id = b.dataset.fence, days = tap(b, `[data-fence="${id}"]`);
+    famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { fencing_days: days } }));
   });
   root.querySelectorAll("[data-own]").forEach(b => b.onclick = () => {
-    const p = person(b.dataset.own);
-    famSave(fid, () => api(`/people/${p.id}`, { method: "PATCH", body: { own_days: true, days: toggle(p.days, b.dataset.day) } }));
+    const id = b.dataset.own, days = tap(b, `[data-own="${id}"]`);
+    famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { own_days: true, days } }));
   });
   root.querySelectorAll("[data-fencer]").forEach(c => c.onchange = () =>
     famSave(fid, () => api(`/people/${c.dataset.fencer}`, { method: "PATCH", body: { is_fencer: c.checked } })));
@@ -613,7 +683,11 @@ function renderEditor(id) {
   if (id && !e) { location.hash = `#/t/${t.id}`; return; }
   if (!S.draft || S.draft.id !== (id || 0)) {
     const me = myFamily();
-    S.draft = e ? { ...e, split: { ...e.split }, amount: (e.amount_cents / 100).toFixed(2), basisTouched: true }
+    const split = e ? Object.fromEntries(Object.entries(e.split).filter(([id, v]) => {
+      const fam = families.find(x => x.id === Number(id));
+      return fam && (v != null || autoUnits(e.basis, fam, e.date) > 0);
+    })) : {};
+    S.draft = e ? { ...e, split, amount: (e.amount_cents / 100).toFixed(2), basisTouched: true }
       : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "person", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, basisTouched: false };
     if (!e) S.draft.split = defaultSplit("person", families, null);
   }
@@ -981,6 +1055,7 @@ app.addEventListener("click", async ev => {
         return;
       }
       case "new-trip": return newTrip();
+      case "tour": return showTour();
       case "pick-me":
         save(myKey(), b.dataset.id || null);
         if (b.dataset.id) toast(b.dataset.id === "none" ? "Got it: you're not on this trip." : `Showing the ${famName(b.dataset.id)} family. Tap "Change family" to switch.`);
@@ -991,16 +1066,16 @@ app.addEventListener("click", async ev => {
       case "pay-notes": location.hash = `#/t/${t.id}/f/${id}`; return;
       case "own-days": {
         const fid = S.trip.families.find(f => f.people.some(p => p.id === id)).id;
-        return famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { own_days: true } }), "Now has own days");
+        return famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { own_days: true } }), "Now has own days", `[data-own="${id}"]`);
       }
       case "family-days": {
         const fid = S.trip.families.find(f => f.people.some(p => p.id === id)).id;
-        return famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { own_days: false } }), "Back on the family's days");
+        return famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { own_days: false } }), "Back on the family's days", `[data-pname="${id}"]`);
       }
       case "remove-person": {
         const f = S.trip.families.find(f => f.people.some(p => p.id === id)), p = f.people.find(p => p.id === id);
         if (!(await confirmSheet(`Remove ${esc(p.name)}?`, "They won't count toward any expense on this trip.", "Remove", true))) return;
-        return famSave(f.id, () => api(`/people/${id}`, { method: "DELETE" }), `${p.name} removed`);
+        return famSave(f.id, () => api(`/people/${id}`, { method: "DELETE" }), `${p.name} removed`, "#newname");
       }
       case "remove-family": {
         const f = S.trip.families.find(f => f.id === id);

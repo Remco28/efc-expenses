@@ -443,3 +443,24 @@ input[type=search] { font: inherit; font-size: 16px; width: 100%; padding: 11px 
 .day-ppl > span { white-space: nowrap; }
 .card.you select { background: #fff; color: var(--ink); }
 .pickrow select { width: 100%; }
+
+/* ---------- first-visit tour ---------- */
+.tour-back { position: fixed; inset: 0; z-index: 70; background: rgba(8, 16, 30, .55); display: flex; align-items: center; justify-content: center; padding: 16px; animation: fade .15s ease-out; }
+.tour { position: relative; width: 100%; max-width: 420px; background: var(--paper); border-radius: 6px; border-top: 4px solid var(--gold); padding: 28px 22px 20px; text-align: center; box-shadow: 0 18px 50px rgba(8, 16, 30, .35); animation: up .2s ease-out; }
+.tour-close { position: absolute; top: 6px; right: 6px; width: 44px; height: 44px; min-height: 0; padding: 0; color: var(--ink-3); border-radius: 50%; }
+.tour-close:hover { color: var(--ink); background: var(--raised); }
+.tour-ic { width: 64px; height: 64px; margin: 4px auto 14px; border-radius: 50%; background: var(--navy-2); color: var(--gold); display: grid; place-items: center; box-shadow: 0 0 0 4px var(--gold-wash); }
+.tour-ic svg { width: 30px; height: 30px; }
+.tour-step { font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+.tour h2 { font-size: 21px; margin: 6px 0 10px; }
+.tour p { color: var(--ink-2); font-size: 15.5px; line-height: 1.5; margin: 0 0 16px; min-height: 92px; }
+.tour-dots { display: flex; justify-content: center; gap: 6px; margin-bottom: 16px; }
+.tour-dots span { width: 7px; height: 7px; border-radius: 50%; background: var(--rule); }
+.tour-dots span.on { background: var(--gold); width: 18px; border-radius: 4px; }
+.tour-nav { display: flex; gap: 10px; }
+.tour-nav > * { flex: 1; }
+.days-sum { font-size: 13px; font-weight: 600; color: var(--ink); margin: -2px 0 6px; }
+.days-sum::before { content: "Selected: "; font-weight: 500; color: var(--ink-3); }
+/* names get their own line when the row gets tight (large text, small phones) */
+.person-row { flex-wrap: wrap; }
+.person-row .pname { flex: 1 1 150px; }
