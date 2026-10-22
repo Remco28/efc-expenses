@@ -34,6 +34,7 @@ export function tournamentDays(start, end) {
 // Units a family counts for on an expense when nobody has set them by hand.
 // `date` only matters for per-person and per-family: who was there that day.
 export function autoUnits(basis, family, date) {
+  if (family.kind === "staff") return 0;          // coaches and staff never share costs
   const people = family.people || [];
   const fencers = people.filter(p => p.is_fencer);
   const there = p => !date || p.days.includes(date);
@@ -51,7 +52,7 @@ export function autoUnits(basis, family, date) {
 // A hand-set number overrides it, and 0 means deliberately not sharing.
 export function defaultSplit(basis, families) {
   const split = {};
-  for (const f of families) split[f.id] = basis === "custom" ? 1 : null;
+  for (const f of families) if (f.kind !== "staff") split[f.id] = basis === "custom" ? 1 : null;
   return split;
 }
 
@@ -61,7 +62,7 @@ export function unitsFor(expense, families) {
   const units = {};
   for (const [id, set] of Object.entries(expense.split || {})) {
     const f = byId.get(String(id));
-    if (!f) continue;
+    if (!f || f.kind === "staff") continue;
     const n = set == null ? autoUnits(expense.basis, f, expense.date) : Number(set);
     if (n > 0) units[id] = n;
   }

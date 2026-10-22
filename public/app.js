@@ -16,7 +16,11 @@ const range = t => {
   return t.start_date === t.end_date ? utc(t.start_date).toLocaleDateString("en-US", { ...o, year: "numeric" })
     : `${utc(t.start_date).toLocaleDateString("en-US", o)} – ${utc(t.end_date).toLocaleDateString("en-US", { ...o, year: "numeric" })}`;
 };
-const famName = id => S.trip?.families.find(f => f.id === Number(id))?.name || "?";
+// Coaches and staff are stored alongside families (kind "staff") and shown with their role.
+const famLabel = f => !f ? "?" : f.kind === "staff" ? `${f.role || "Coach"} ${f.name}` : f.name;
+const famName = id => famLabel(S.trip?.families.find(f => f.id === Number(id)));
+const realFamilies = () => S.trip.families.filter(f => f.kind !== "staff");
+const staffList = () => S.trip.families.filter(f => f.kind === "staff");
 const final = () => S.trip?.tournament.status === "final";
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
@@ -51,7 +55,9 @@ function toast(msg) {
 
 class AuthError extends Error {}
 async function api(path, opts = {}) {
-  const headers = { "x-user-name": encodeURIComponent(S.name || ""), ...(opts.headers || {}) };
+  const me = S.trip && S.trip.families.find(f => f.id === Number(load(`efc-fam-${S.trip.tournament.id}`)));
+  const who = me?.kind === "staff" && S.name ? `${S.name} (${me.role || "Coach"})` : S.name;
+  const headers = { "x-user-name": encodeURIComponent(who || ""), ...(opts.headers || {}) };
   let body = opts.body;
   if (body && !(body instanceof Blob)) { headers["content-type"] = "application/json"; body = JSON.stringify(body); }
   let res;
@@ -110,7 +116,7 @@ const TOUR = [
   { icon: "flag", title: "Welcome to EFC Trip Expenses",
     text: "One place for the team's shared travel costs: meals, the coach's travel, transport. It works out who owes what, fairly. Here's how it works in a minute." },
   { icon: "users", title: "Pick your trip, then your family",
-    text: "Open a trip and tell it which family you are. From then on, the top of the trip shows what your family owes or gets back. That choice only changes what your phone shows." },
+    text: "Open a trip and tell it which family you are, or that you're the coach. From then on, the top of the trip shows what you owe or get back. Coaches who pay for things, like their hotel, are paid back by the treasurer." },
   { icon: "edit", title: "Manage your family",
     text: "In Families, open your family to add everyone going: fencers, parents, siblings. Set the days you're there, and the days each kid fences. Changes save as you tap." },
   { icon: "camera", title: "Paid for something? Add it on the spot",
@@ -334,21 +340,32 @@ const myFamily = () => { const v = load(myKey()); return v === "none" ? "none" :
 
 function youCard() {
   const { tournament: t, families, expenses } = S.trip;
+  const fams = realFamilies(), staff = staffList();
   if (!families.length) return "";
   const me = myFamily();
   if (!me) return `<div class="card you"><div class="eyebrow">Your family</div>
     <p style="margin:6px 0 4px">Which family are you? Pick one and we'll show what you owe right here.</p>
     <p class="hint" style="margin:0 0 10px">This only changes what this phone shows you. It doesn't change anything for anyone else.</p>
-    ${families.length > 8 ? `<div class="pickrow"><select id="pickfam" aria-label="Your family"><option value="">Choose your family…</option>
-        ${families.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join("")}<option value="none">I'm not on this trip</option></select></div>
+    ${fams.length > 8 ? `<div class="pickrow"><select id="pickfam" aria-label="Your family"><option value="">Choose your family…</option>
+        ${fams.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join("")}
+        ${staff.length ? `<optgroup label="Coaches & staff">${staff.map(f => `<option value="${f.id}">${esc(famLabel(f))}</option>`).join("")}</optgroup>` : ""}
+        <option value="none">I'm not traveling (organizer, treasurer, board…)</option></select></div>
       <div class="pills" style="margin-top:8px">`
-    : `<div class="pills">${families.map(f => `<button data-act="pick-me" data-id="${f.id}">${esc(f.name)}</button>`).join("")}
-      <button data-act="pick-me" data-id="none">Not on this trip</button>`}
-      ${final() ? "" : `<button class="addmine" data-act="add-my-family">${icon("plus")} Add my family</button>`}</div></div>`;
-  const change = `<button class="link small tap" data-act="pick-me" data-id="">Change family</button>`;
-  if (me === "none") return `<div class="card you"><div class="head" style="margin:0"><span class="muted">You're not on this trip.</span>${change}</div></div>`;
+    : `<div class="pills">${fams.map(f => `<button data-act="pick-me" data-id="${f.id}">${esc(f.name)}</button>`).join("")}`}
+      ${final() ? "" : `<button class="addmine" data-act="add-my-family">${icon("plus")} Add my family</button>`}</div>
+    <div class="pick-others">${fams.length > 8 ? "" : `<button class="link small tap" data-act="pick-staff">I'm a coach or staff</button>
+      <button class="link small tap" data-act="pick-me" data-id="none">I'm not traveling (organizer, treasurer, board…)</button>`}</div></div>`;
+  const change = `<button class="link small tap" data-act="pick-me" data-id="">Change</button>`;
+  if (me === "none") return `<div class="card you"><div class="head" style="margin:0"><span class="muted">You're not traveling on this trip.</span>${change}</div>
+    <p class="hint" style="margin:4px 0 0">You can still see everything and help: add expenses, act as treasurer, or check the numbers.</p></div>`;
   const r = balances(expenses, families).rows[me.id];
-  const head = `<div class="head" style="margin-bottom:4px"><span class="eyebrow">${esc(me.name)} family</span>${change}</div>`;
+  const head = `<div class="head" style="margin-bottom:4px"><span class="eyebrow">${me.kind === "staff" ? esc(famLabel(me)) : `${esc(me.name)} family`}</span>${change}</div>`;
+  if (me.kind === "staff" && !final()) return `<div class="card you">${head}
+    ${r.paid ? `<div class="muted small">If the trip ended now</div><div class="big" style="font-size:22px">The treasurer pays you back <b class="get">${money(r.paid)}</b></div>
+      <p class="hint">That's what you've paid for the team so far. Coaches and staff never share the costs.</p>`
+      : `<div class="big" style="font-size:20px">Nothing to pay you back yet</div>
+      <p class="hint">Paid for something for the team, like your flight or hotel? Add it and choose yourself under "Who paid?". The treasurer pays you back.</p>`}
+    <div class="sendto"><b>How to pay you back:</b> ${me.pay_notes ? esc(me.pay_notes) : `<span class="faint">not added yet</span>`} <button class="link small" data-act="pay-notes" data-id="${me.id}">${me.pay_notes ? "Edit" : "Add"}</button></div></div>`;
   if (t.treasurer_name && t.treasurer_family_id === me.id) {
     const p = S.trip.payments, left = p.filter(x => !x.paid_at).length;
     return `<div class="card you">${head}<div class="big">You're the treasurer</div>
@@ -357,7 +374,7 @@ function youCard() {
   }
   if (final()) {
     const x = S.trip.payments.find(p => p.family_id === me.id);
-    if (!x) return `<div class="card you">${head}<div class="big">All square</div><p class="muted" style="margin:4px 0 0">Your family doesn't owe or get anything.</p></div>`;
+    if (!x) return `<div class="card you">${head}<div class="big">All square</div><p class="muted" style="margin:4px 0 0">${me.kind === "staff" ? "Nothing to pay you back." : "Your family doesn't owe or get anything."}</p></div>`;
     const done = x.paid_at ? `<span class="chip ok">${icon("check")} Done</span>` : `<span class="chip">Waiting</span>`;
     if (x.direction === "in") return `<div class="card you">${head}
       <div class="head" style="margin:0"><div><div class="muted small">Pay ${esc(t.treasurer_name)}</div><div class="big">${money(x.amount_cents)}</div></div>${done}</div>
@@ -471,7 +488,9 @@ function familyFlags(f) {
 }
 
 function tabFamilies(el) {
-  const { tournament: t, families } = S.trip;
+  const { tournament: t } = S.trip;
+  const families = realFamilies(), staff = staffList();
+  const paid = balances(S.trip.expenses, S.trip.families).rows;
   const days = tournamentDays(t.start_date, t.end_date);
   const ro = final();
   const row = f => {
@@ -491,6 +510,12 @@ function tabFamilies(el) {
       <div id="famlist">${families.map(row).join("")}</div>
       <p class="faint small" id="nomatch" hidden>No family or person matches that.</p>
     </div>
+    <div class="card"><div class="head"><h2 style="border:0;padding:0;margin:0">Coaches & staff</h2>
+        ${ro ? "" : `<button class="btn-ghost btn-small" data-act="add-staff">${icon("plus")} Add</button>`}</div>
+      <p class="muted small" style="margin-top:-4px">They travel with the team and never share the costs. If they pay for something, like the coach's own hotel, the treasurer pays them back.</p>
+      ${staff.map(f => `<a class="famrow" href="#/t/${t.id}/f/${f.id}"><div class="grow"><div class="fam-name">${esc(famLabel(f))}</div>
+        <div class="fam-sum">${paid[f.id]?.paid ? `Paid ${money(paid[f.id].paid)} for the team, paid back by the treasurer` : "Hasn't paid for anything yet"}</div></div>${icon("chev")}</a>`).join("")
+        || `<p class="faint small" style="margin:0">None added yet.</p>`}</div>
     <div class="card"><h2>Check a day</h2><p class="muted small" style="margin-top:-4px">See who's there and who's fencing on one day, family by family.</p>
       <div class="days">${days.map(d => `<a class="daylink" href="#/t/${t.id}/day/${d}">${esc(dayShort(d))}</a>`).join("")}</div></div>`
     : `<div class="card empty"><div class="ic">${icon("users")}</div><b>No families yet</b>Add each family going on this trip. You'll set who's in it, which days they're there, and who's fencing.
@@ -539,6 +564,7 @@ function renderFamily(fid, focusSel) {
   const f = S.trip.families.find(x => x.id === fid);
   if (!f) { location.hash = `#/t/${t.id}?tab=families`; return; }
   const ro = final();
+  if (f.kind === "staff") return renderStaff(f, focusSel);
   const days = tournamentDays(t.start_date, t.end_date);
   const chips = (list, attrs, { only, fence, label } = {}) => `<div class="days-sum" aria-hidden="true">${esc(daysSummary(list))}</div>
     <div class="days${fence ? " fence" : ""}" role="group" aria-label="${esc(label || "Days")}">${days.map(d => {
@@ -587,6 +613,58 @@ function renderFamily(fid, focusSel) {
     </div></div>`;
   wireFamily(f);
   if (focusSel) restoreFocus(focusSel);
+}
+
+function renderStaff(f, focusSel) {
+  const { tournament: t } = S.trip, ro = final();
+  const paid = balances(S.trip.expenses, S.trip.families).rows[f.id]?.paid || 0;
+  app.innerHTML = `${bar({ back: `#/t/${t.id}?tab=families`, title: famLabel(f), sub: t.name, right: `<span class="saved" id="savestate" role="status" aria-live="polite"></span>` })}
+    <div class="wrap"><div class="stack">
+      <div class="callout">Coaches and staff never share the trip's costs. Anything they pay for the team is paid back to them by the treasurer.${paid ? ` So far: <b>${money(paid)}</b>.` : ""}</div>
+      <div class="card">
+        <label class="f" for="st-name" style="margin-top:0">Name</label><input id="st-name" value="${esc(f.name)}" ${ro ? "disabled" : ""}>
+        <label class="f" for="st-role">Role</label><input id="st-role" value="${esc(f.role)}" placeholder="Coach, Assistant coach, Armorer…" ${ro ? "disabled" : ""}>
+        <label class="f" for="fam-pay">How should the treasurer pay them back? <span class="opt">(optional)</span></label>
+        <input id="fam-pay" value="${esc(f.pay_notes)}" placeholder="e.g. Zelle 614-555-0150">
+        <p class="hint">Changes save as you go.</p>
+      </div>
+      ${ro ? "" : `<button class="btn-danger btn-block" data-act="remove-family" data-id="${f.id}">Remove ${esc(famLabel(f))} from this trip</button>`}
+      <a class="btn btn-ghost btn-block" href="#/t/${t.id}?tab=families">Done</a>
+    </div></div>`;
+  const save1 = (id, key) => { const el = document.getElementById(id); if (el) el.onchange = () => (key !== "name" || el.value.trim()) && famSave(f.id, () => api(`/families/${f.id}`, { method: "PATCH", body: { [key]: el.value } })); };
+  save1("st-name", "name"); save1("st-role", "role"); save1("fam-pay", "pay_notes");
+  if (focusSel) restoreFocus(focusSel);
+}
+
+async function addStaff({ mine = false } = {}) {
+  const t = S.trip.tournament;
+  const v = await sheet({
+    title: mine ? "Add yourself as coach or staff" : "Add a coach or staff member", ok: "Add",
+    lead: "Coaches and staff never share the costs. If they pay for something for the team, the treasurer pays them back.",
+    body: `<label class="f" for="sn">Name</label><input id="sn" name="name" placeholder="e.g. Mike Torres" required>
+      <label class="f" for="sr">Role</label><input id="sr" name="role" value="Coach">
+      <label class="f" for="sp">How should the treasurer pay them back? <span class="opt">(optional)</span></label><input id="sp" name="pay_notes" placeholder="e.g. Zelle 614-555-0150">`,
+  });
+  if (!v) return;
+  const r = await act(() => api(`/tournaments/${t.id}/families`, { method: "POST", body: { ...v, kind: "staff" } }), "Added");
+  if (mine) { save(myKey(), String(r.id)); location.hash = `#/t/${t.id}`; return refresh("expenses"); }
+  refresh("families");
+}
+
+async function pickStaff() {
+  const staff = staffList();
+  if (!staff.length) return addStaff({ mine: true });
+  const v = await sheet({
+    title: "Which one are you?", ok: "That's me",
+    body: `<div class="choices">${staff.map((f, i) => `<label class="choice ${i ? "" : "on"}"><input type="radio" name="sid" value="${f.id}" ${i ? "" : "checked"} class="visually-hidden"><span class="dot"></span><span><b>${esc(famLabel(f))}</b></span></label>`).join("")}</div>
+      <p class="hint">Not listed? <button type="button" class="link small" data-sheet-act="add">Add yourself</button></p>`,
+    onOpen: form => form.querySelectorAll(".choice").forEach(c => c.onclick = () => { form.querySelectorAll(".choice").forEach(x => x.classList.toggle("on", x === c)); c.querySelector("input").checked = true; }),
+  });
+  if (!v) return;
+  if (v.action === "add") return addStaff({ mine: true });
+  save(myKey(), v.sid);
+  toast(`Showing ${famName(v.sid)}. Tap "Change" to switch.`);
+  renderTrip(tabNow(), '[data-act="pick-me"][data-id=""]');
 }
 
 // Every change on the Manage family screen saves immediately. Saves run one
@@ -648,7 +726,7 @@ function renderDay(date) {
   const { tournament: t, families } = S.trip;
   const days = tournamentDays(t.start_date, t.end_date);
   if (!days.includes(date)) date = days[0];
-  const there = families.map(f => ({ f, ppl: f.people.filter(p => p.days.includes(date)) }));
+  const there = realFamilies().map(f => ({ f, ppl: f.people.filter(p => p.days.includes(date)) }));
   const present = there.filter(x => x.ppl.length), absent = there.filter(x => !x.ppl.length);
   const nPeople = present.reduce((n, x) => n + x.ppl.length, 0);
   const nFence = present.reduce((n, x) => n + x.ppl.filter(p => p.fencing_days.includes(date)).length, 0);
@@ -684,7 +762,7 @@ function renderEditor(id) {
   if (!S.draft || S.draft.id !== (id || 0)) {
     const me = myFamily();
     // Families added since this expense was entered count automatically too.
-    const split = e ? { ...Object.fromEntries(families.map(f => [f.id, e.basis === "custom" ? 0 : null])), ...e.split } : {};
+    const split = e ? { ...Object.fromEntries(families.filter(f => f.kind !== "staff").map(f => [f.id, e.basis === "custom" ? 0 : null])), ...e.split } : {};
     S.draft = e ? { ...e, split, amount: (e.amount_cents / 100).toFixed(2), basisTouched: true }
       : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "person", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, basisTouched: false };
     if (!e) S.draft.split = defaultSplit("person", families);
@@ -706,7 +784,7 @@ function renderEditor(id) {
         <label class="f" for="vend">Store or restaurant <span class="opt">(optional)</span></label><input id="vend" value="${esc(d.vendor)}">
       </div>
       <div class="section"><h2><span class="n">3</span>Who paid?</h2>
-        <div class="pills" id="paid" role="radiogroup" aria-label="Who paid">${families.map(f => `<button type="button" role="radio" aria-checked="${Number(d.paid_by) === f.id}" data-fam="${f.id}" class="${Number(d.paid_by) === f.id ? "on" : ""}">${esc(f.name)}</button>`).join("")}</div>
+        <div class="pills" id="paid" role="radiogroup" aria-label="Who paid">${families.map(f => `<button type="button" role="radio" aria-checked="${Number(d.paid_by) === f.id}" data-fam="${f.id}" class="${Number(d.paid_by) === f.id ? "on" : ""}">${esc(famLabel(f))}</button>`).join("")}</div>
       </div>
       <div class="section"><h2><span class="n">4</span>How is it shared?</h2>
         <div class="choices" id="basis" role="radiogroup" aria-label="How it's split"></div>
@@ -754,7 +832,7 @@ function resetSplit() { S.draft.split = defaultSplit(S.draft.basis, S.trip.famil
 function cents(v) { const n = Math.round(parseFloat(String(v).replace(/[$,\s]/g, "")) * 100); return Number.isFinite(n) ? n : 0; }
 
 function drawSplit() {
-  const d = S.draft, { families } = S.trip;
+  const d = S.draft, families = realFamilies();
   const el = document.getElementById("split"); if (!el) return;
   const suggested = CATEGORIES[d.category].basis;
   document.getElementById("basis").innerHTML = Object.entries(BASES).map(([k, b]) => `
@@ -940,7 +1018,7 @@ function tabSettle(el) {
     else if (!x) what = `<span class="muted">All square</span>`;
     else if (!t.treasurer_name) what = x.direction === "in" ? `Owes <b>${money(x.amount_cents)}</b>` : `Is owed <b>${money(x.amount_cents)}</b>`;
     else what = x.direction === "in" ? `Pays ${esc(t.treasurer_name)} <b>${money(x.amount_cents)}</b>` : `Gets <b class="get">${money(x.amount_cents)}</b> from ${esc(t.treasurer_name)}`;
-    return `<div class="prow"><div class="grow"><b>${esc(f.name)}</b><div class="small">${what}</div></div>${x && t.treasurer_name ? statusChip(x) : ""}</div>`;
+    return `<div class="prow"><div class="grow"><b>${esc(famLabel(f))}</b><div class="small">${what}</div></div>${x && t.treasurer_name ? statusChip(x) : ""}</div>`;
   }).join("");
   const statement = f => {
     const lines = expenses.filter(e => perExpense[e.id].shares[f.id]).map(e => {
@@ -965,11 +1043,11 @@ function tabSettle(el) {
       ${final() ? "" : `<p class="muted small" style="margin-top:-4px">This updates as expenses are added. It's fixed when the trip is finalized.</p>`}${todo || `<p class="faint">Add families first.</p>`}</div>
     <div class="card ledger"><h2>Balances</h2>
       <div class="table-scroll"><table class="t bal"><tr><th>Family</th><th class="n">Share</th><th class="n">Paid</th><th class="n">Balance</th></tr>
-      ${families.map(f => { const r = rows[f.id]; return `<tr><td>${esc(f.name)}</td><td class="n">${money(r.owed)}</td><td class="n">${money(r.paid)}</td>
+      ${families.map(f => { const r = rows[f.id]; return `<tr><td>${esc(famLabel(f))}</td><td class="n">${money(r.owed)}</td><td class="n">${money(r.paid)}</td>
         <td class="n ${r.net > 0 ? "get" : r.net < 0 ? "owe" : ""}"><b>${r.net > 0 ? "+" : ""}${money(r.net)}</b></td></tr>`; }).join("")}
         <tr><td><b>Total</b></td><td class="n"><b>${money(total)}</b></td><td class="n"><b>${money(total)}</b></td><td></td></tr></table></div>
       <p class="hint">Share is the family's part of every expense. Paid is what they put on their own card. A plus means they're owed money, a minus means they owe.</p></div>
-    <div class="card ledger"><h2>Each family's breakdown</h2><p class="muted small" style="margin-top:-4px">Tap a family to see every expense they share and how much of it is theirs.</p>${families.map(statement).join("")}</div>
+    <div class="card ledger"><h2>Each family's breakdown</h2><p class="muted small" style="margin-top:-4px">Tap a family to see every expense they share and how much of it is theirs.</p>${families.filter(f => f.kind !== "staff").map(statement).join("")}</div>
     ${final() ? `<div class="card action"><h2>Trip finalized</h2><p class="muted small">The trip is locked. Copy the payment list into the team chat, or download the record with every receipt.</p>
         <div class="row-actions"><button class="btn-primary" data-act="copy-final">${icon("copy")} Copy payment list</button>
         <button class="btn-ghost" data-act="export">${icon("download")} Download PDF record</button></div>
@@ -1032,7 +1110,7 @@ async function volunteerSheet() {
     lead: final() ? "The treasurer can't change once the trip is final, but you can update where families send money." : "",
     body: `${final() ? "" : `<label class="f" for="tn" style="margin-top:0">Treasurer's name</label><input id="tn" name="treasurer_name" value="${esc(t.treasurer_name || S.name)}" required>
       <label class="f" for="tf">Their family on this trip</label><select id="tf" name="treasurer_family_id"><option value="">Not on this trip</option>
-        ${fams.map(f => `<option value="${f.id}" ${famPick === f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select>
+        ${fams.filter(f => f.kind !== "staff").map(f => `<option value="${f.id}" ${famPick === f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select>
       <p class="hint">${guessed}If their family is on the trip, it doesn't pay itself. It just keeps or adds the difference at the end.</p>`}
       <label class="f" for="tnotes" ${final() ? 'style="margin-top:0"' : ""}>Where should families send money?</label>
       <input id="tnotes" name="treasurer_notes" value="${esc(t.treasurer_notes || "")}" placeholder="e.g. Venmo @lisa-chen or Zelle 555-0100">`,
@@ -1063,6 +1141,8 @@ app.addEventListener("click", async ev => {
         // The button that was pressed is gone after this; focus what replaced it.
         return renderTrip(tabNow(), b.dataset.id ? '[data-act="pick-me"][data-id=""]' : '[data-act="pick-me"]');
       case "add-family": return addFamily();
+      case "add-staff": return addStaff();
+      case "pick-staff": return pickStaff();
       case "add-my-family": return addFamily({ mine: true });
       case "pay-notes": location.hash = `#/t/${t.id}/f/${id}`; return;
       case "own-days": {
@@ -1080,7 +1160,7 @@ app.addEventListener("click", async ev => {
       }
       case "remove-family": {
         const f = S.trip.families.find(f => f.id === id);
-        if (!(await confirmSheet(`Remove the ${esc(f.name)} family?`, "Everyone in it is removed from this trip too.", "Remove", true))) return;
+        if (!(await confirmSheet(f.kind === "staff" ? `Remove ${esc(famLabel(f))}?` : `Remove the ${esc(f.name)} family?`, f.kind === "staff" ? "They're taken off this trip." : "Everyone in it is removed from this trip too.", "Remove", true))) return;
         await act(() => api(`/families/${id}`, { method: "DELETE" }), "Family removed");
         location.hash = `#/t/${t.id}?tab=families`; return;
       }

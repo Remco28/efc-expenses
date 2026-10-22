@@ -142,6 +142,8 @@ async function familyIds(env: Env, tid: number) {
 
 async function expenseInput(env: Env, tid: number, b: any) {
   const ids = await familyIds(env, tid);
+  const { results: staffRows } = await env.DB.prepare("SELECT id FROM families WHERE tournament_id = ? AND kind = 'staff'").bind(tid).all<any>();
+  const staffIds = new Set(staffRows.map(x => x.id as number));
   const amount = Math.round(Number(b.amount_cents));
   if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Amount must be more than zero");
   if (!(b.basis in BASES)) throw new HttpError(400, "Unknown split");
@@ -149,7 +151,7 @@ async function expenseInput(env: Env, tid: number, b: any) {
   if (!ids.has(Number(b.paid_by))) throw new HttpError(400, "Pick the family that paid");
   const split: Record<string, number | null> = {};
   for (const [k, v] of Object.entries(b.split || {})) {
-    if (!ids.has(Number(k))) continue;
+    if (!ids.has(Number(k)) || staffIds.has(Number(k))) continue;
     split[k] = v == null ? null : Math.max(0, Number(v) || 0);
   }
   if (!Object.keys(split).length) throw new HttpError(400, "Include at least one family");
@@ -198,6 +200,10 @@ async function resetSandbox(env: Env, req: Request, tid: number, name: string) {
         .bind(f.id, pn, fencer, JSON.stringify(days), JSON.stringify(fdays), days.length === famDays.length ? 0 : 1)));
   }
   const everyone = JSON.stringify(Object.fromEntries(Object.values(fid).map(id => [id, null])));
+  for (const [sname, role, pay] of SANDBOX.staff || []) {
+    const st = await env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes, days, kind, role) VALUES (?, ?, ?, '[]', 'staff', ?) RETURNING id").bind(tid, sname, pay, role).first<any>();
+    fid[sname] = st.id;
+  }
   const stamp = now();
   const rows = [];
   for (const [desc, vendor, date, cat, basis, cents, payer, image] of SANDBOX.expenses) {
@@ -282,7 +288,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const { results } = await env.DB.prepare(
       `SELECT t.*, (SELECT COALESCE(SUM(amount_cents), 0) FROM expenses e WHERE e.tournament_id = t.id) AS total_cents,
               (SELECT COUNT(*) FROM expenses e WHERE e.tournament_id = t.id) AS expense_count,
-              (SELECT COUNT(*) FROM families f WHERE f.tournament_id = t.id) AS family_count,
+              (SELECT COUNT(*) FROM families f WHERE f.tournament_id = t.id AND f.kind = 'family') AS family_count,
               (SELECT COUNT(*) FROM payments p WHERE p.tournament_id = t.id) AS pay_total,
               (SELECT COUNT(*) FROM payments p WHERE p.tournament_id = t.id AND p.paid_at IS NOT NULL) AS pay_done
        FROM tournaments t WHERE t.deleted_at IS NULL ORDER BY t.start_date DESC, t.id DESC`).all();
@@ -405,10 +411,16 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const tid = Number(m[1]);
     await openTournament(env, tid);
     const b = await body(req);
-    if (!str(b.name)) throw new HttpError(400, "Give the family a name");
+    const staff = b.kind === "staff";
+    if (!str(b.name)) throw new HttpError(400, staff ? "Give their name" : "Give the family a name");
     const all = await allowedDays(env, tid);
-    const days = b.days == null ? [...all].sort() : cleanDays(b.days, all);
-    const r = await env.DB.prepare("INSERT INTO families (tournament_id, name, days) VALUES (?, ?, ?) RETURNING id").bind(tid, str(b.name), JSON.stringify(days)).first<any>();
+    const days = staff ? [] : b.days == null ? [...all].sort() : cleanDays(b.days, all);
+    const r = await env.DB.prepare("INSERT INTO families (tournament_id, name, days, kind, role, pay_notes) VALUES (?, ?, ?, ?, ?, ?) RETURNING id")
+      .bind(tid, str(b.name), JSON.stringify(days), staff ? "staff" : "family", staff ? str(b.role, 40) || "Coach" : "", str(b.pay_notes, 300)).first<any>();
+    if (staff) {
+      await log(env, tid, name, `added ${str(b.role, 40) || "Coach"} ${str(b.name)} to coaches & staff`);
+      return json({ id: r.id }, 201);
+    }
     // A family that joins late shares existing costs automatically, by who was
     // there (custom splits are hand-set, so they're left alone).
     const { results: exps } = await env.DB.prepare("SELECT id, split FROM expenses WHERE tournament_id = ? AND basis <> 'custom'").bind(tid).all<any>();
@@ -427,6 +439,9 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         // How to pay this family; editable after finalizing, since that's when it's needed.
         await env.DB.prepare("UPDATE families SET pay_notes = ? WHERE id = ?").bind(str(b.pay_notes, 300), fid).run();
         await log(env, tid, name, `updated how to pay the ${f.name} family`);
+      }
+      if (b.role != null && f.kind === "staff" && str(b.role, 40) !== f.role) {
+        await env.DB.prepare("UPDATE families SET role = ? WHERE id = ?").bind(str(b.role, 40) || "Coach", fid).run();
       }
       if (b.name != null && str(b.name) !== f.name) {
         await openTournament(env, tid);

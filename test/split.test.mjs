@@ -104,3 +104,14 @@ test("fixing someone's days later flows into the split", () => {
   fams[0].people[1].days.push(days[2]);           // A's parent was actually there day 3
   assert.deepEqual(Object.keys(shares(e, fams).shares).sort(), ["1", "2", "4"]);
 });
+
+test("staff never share, but are paid back through the treasurer", () => {
+  const withCoach = [...ten, { id: 9, name: "Mike", kind: "staff", role: "Coach", people: [] }];
+  const hotel = { id: 1, amount_cents: 90000, basis: "fencer_day", date: null, paid_by: 9, split: { ...defaultSplit("fencer_day", withCoach), 9: 5 } };
+  const { rows } = balances([hotel], withCoach);
+  assert.equal(rows[9].owed, 0);
+  assert.equal(rows[9].net, 90000);
+  const plan = treasurerPlan(rows, 1);
+  assert.ok(plan.some(x => x.family_id === 9 && x.direction === "out" && x.amount_cents === 90000));
+  assert.equal(Object.values(rows).reduce((s, r) => s + r.net, 0), 0);
+});

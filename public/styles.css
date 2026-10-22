@@ -464,3 +464,5 @@ input[type=search] { font: inherit; font-size: 16px; width: 100%; padding: 11px 
 /* names get their own line when the row gets tight (large text, small phones) */
 .person-row { flex-wrap: wrap; }
 .person-row .pname { flex: 1 1 150px; }
+.pick-others { display: flex; flex-wrap: wrap; gap: 0 18px; margin-top: 6px; }
+.card.you .pick-others .link { color: var(--gold); }

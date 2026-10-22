@@ -29,7 +29,8 @@ export async function exportPdf(trip) {
   const { PDFDocument, StandardFonts, rgb } = await lib();
   const { tournament: t, families, expenses, payments } = trip;
   const { rows, perExpense } = balances(expenses, families);
-  const fam = id => families.find(f => f.id === Number(id))?.name || "?";
+  const label = f => !f ? "?" : f.kind === "staff" ? `${f.role || "Coach"} ${f.name}` : f.name;
+  const fam = id => label(families.find(f => f.id === Number(id)));
   const isFinal = t.status === "final";
 
   const doc = await PDFDocument.create();
@@ -172,7 +173,7 @@ export async function exportPdf(trip) {
   };
   section("Who pays what", `Each cost is split by what it was for, among the people it was for. Balance is what a family paid minus its share. Families that owe pay the treasurer; the treasurer pays families that are owed.${isFinal ? " Payment status is as of the print date below." : ""}`);
   table([
-    { label: "Family", w: 88, f: f => f.name, bold: true, sub: f => `${f.people.length} going, ${f.people.filter(p => p.is_fencer).length} fencing` },
+    { label: "Family", w: 88, f: f => label(f), bold: true, sub: f => f.kind === "staff" ? "doesn't share costs" : `${f.people.length} going, ${f.people.filter(p => p.is_fencer).length} fencing` },
     { label: "Share", w: 66, align: "right", f: f => money(rows[f.id].owed) },
     { label: "Paid", w: 66, align: "right", f: f => money(rows[f.id].paid) },
     { label: "Balance", w: 70, align: "right", f: f => (rows[f.id].net > 0 ? "+" : "") + money(rows[f.id].net), color: f => rows[f.id].net > 0 ? C.get : rows[f.id].net < 0 ? C.owe : C.ink },
@@ -202,7 +203,7 @@ export async function exportPdf(trip) {
   runningTitle = "Family statements";
   if (y < 300) newPage(); else y -= 10;
   section("Family statements", "Every expense each family shares, how it was divided, and that family's part of it. An asterisk marks someone who fenced.");
-  for (const f of families) {
+  for (const f of families.filter(x => x.kind !== "staff")) {
     const lines = expenses.filter(e => perExpense[e.id].shares[f.id]);
     const r = rows[f.id];
     need(70);
@@ -235,7 +236,7 @@ export async function exportPdf(trip) {
   // Who was there and who fenced, by day: the basis for every count above.
   {
     const days = []; for (let d = utc(t.start_date); d <= utc(t.end_date); d.setUTCDate(d.getUTCDate() + 1)) days.push(d.toISOString().slice(0, 10));
-    const people = families.flatMap(f => f.people.map(p => ({ ...p, fam: f.name })));
+    const people = families.filter(f => f.kind !== "staff").flatMap(f => f.people.map(p => ({ ...p, fam: f.name })));
     const dayW = Math.min(46, (CW - 170) / days.length);
     need(64 + 30 + 20 + 16 * Math.min(people.length, 4)); // title, note, header and a few rows stay together
     section("Who was there, by day", "The basis for every count in this record. x = there that day; F = there and fenced that day (one fencer-day). Per-person costs count the people there on the cost's day; per-fencer-day costs count the F marks.");
