@@ -106,7 +106,19 @@ const confirmSheet = (title, lead, ok = "Yes", danger = false) => sheet({ title,
 window.addEventListener("hashchange", route);
 document.addEventListener("visibilitychange", () => { if (!document.hidden && !S.draft && !document.querySelector(".sheet-back")) route(); });
 
+let lastScreen = null;
 async function route() {
+  await show();
+  // On a new screen, start keyboard and screen-reader users at its heading.
+  const screen = location.hash.split("?")[0];
+  if (screen !== lastScreen) {
+    lastScreen = screen;
+    const h1 = document.querySelector("h1");
+    if (h1 && !document.querySelector(".sheet-back") && document.activeElement === document.body) { h1.tabIndex = -1; h1.focus({ preventScroll: true }); }
+  }
+}
+
+async function show() {
   const h = location.hash.replace(/^#\/?/, "");
   const [path, query] = h.split("?");
   const parts = path.split("/").filter(Boolean);
@@ -223,7 +235,7 @@ function steps() {
       next: "Pick a treasurer", why: "One person collects what's owed and pays out the rest." },
     { label: "Finalize", done: final(), tab: "settle", go: "Review",
       next: "Finalize when every expense is in", why: "This fixes who pays what. Keep adding expenses until then." },
-    { label: "Settled", done: final() && payments.every(p => p.paid_at), tab: "treasurer", go: "Checklist",
+    { label: "Payments", done: final() && payments.every(p => p.paid_at), tab: "treasurer", go: "Checklist",
       next: "Everyone pays the treasurer", why: "The treasurer ticks off payments as they arrive." },
   ];
   const now = list.findIndex(s => !s.done);
@@ -473,7 +485,7 @@ async function toggleCell(b) {
 
 // ---------- expense editor ----------
 const BASIS_HELP = {
-  person: "Everyone there that day counts as one: fencers, parents, siblings.",
+  person: "Everyone there that day counts as one: fencers, parents, siblings. The app fills in each family's head count for you.",
   fencer: "One share per fencer at the tournament, however many days they fence.",
   fencer_day: "One share for each day each kid fences.",
   family: "Each family that used it pays an equal share.",
@@ -722,7 +734,9 @@ function tabSettle(el) {
     }).join("");
     const r = rows[f.id];
     const openIt = new URLSearchParams(location.hash.split("?")[1] || "").get("open") === String(f.id);
-    return `<details ${openIt ? "open" : ""} id="bd-${f.id}"><summary><span style="flex:1">${esc(f.name)}</span><span class="faint small">${r.net < 0 ? "owes" : r.net > 0 ? "is owed" : "even"} ${money(Math.abs(r.net))} · details</span></summary><table class="t">${lines || `<tr><td class="faint">Not included in anything</td><td></td></tr>`}
+    const isT = t.treasurer_name && f.id === t.treasurer_family_id;
+    const word = r.net === 0 ? "even" : isT ? (r.net > 0 ? "keeps" : "adds") : r.net < 0 ? "owes" : "is owed";
+    return `<details ${openIt ? "open" : ""} id="bd-${f.id}"><summary><span style="flex:1">${esc(f.name)}</span><span class="faint small">${word} ${r.net ? money(Math.abs(r.net)) : ""} · details</span></summary><table class="t">${lines || `<tr><td class="faint">Not included in anything</td><td></td></tr>`}
       <tr><td>Their share</td><td class="n">${money(r.owed)}</td></tr><tr><td>They paid</td><td class="n">${money(r.paid)}</td></tr>
       <tr><td><b>${r.net < 0 ? "They owe" : r.net > 0 ? "They're owed" : "Balance"}</b></td><td class="n"><b>${money(Math.abs(r.net))}</b></td></tr></table></details>`;
   };
@@ -784,7 +798,8 @@ function tabTreasurer(el) {
     ${final() ? `<div class="card"><h2>Progress</h2>
       <table class="t"><tr><td>Collected</td><td class="n"><b>${money(sum(ins, true))}</b> of ${money(sum(ins))}</td></tr>
         <tr><td>Paid out</td><td class="n"><b>${money(sum(outs, true))}</b> of ${money(sum(outs))}</td></tr>
-        <tr><td>In hand right now</td><td class="n"><b>${money(sum(ins, true) - sum(outs, true))}</b></td></tr></table>
+        <tr><td>${sum(ins, true) >= sum(outs, true) ? "In hand right now" : "Paid out ahead of collecting"}</td><td class="n"><b>${money(Math.abs(sum(ins, true) - sum(outs, true)))}</b></td></tr></table>
+      ${sum(ins, true) < sum(outs, true) ? `<p class="hint">You've sent out more than you've collected so far. That's fine if you fronted it; it evens out as the remaining families pay.</p>` : ""}
       <p class="hint">${t.treasurer_family_id ? `The treasurer's own family (${esc(famName(t.treasurer_family_id))}) ${mine >= 0 ? `is owed ${money(mine)}, so the treasurer keeps that much of what's left at the end` : `owes ${money(-mine)}, so the treasurer adds that much themselves`}. After that, nothing is left over.` : "Everything collected gets paid out, so nothing is left over at the end."}</p></div>`
       : `<div class="callout">Nothing to collect yet. Once the trip is finalized, this becomes your checklist: tick each family as their payment arrives and as you pay people back.</div>`}
     <div class="card"><h2>${final() ? "Collect from" : "You'll collect from"}</h2>${final() ? `<p class="muted small" style="margin-top:-4px">Tick each one when the money arrives.</p>` : ""}${ins.map(row).join("") || `<p class="faint">Nobody owes anything.</p>`}</div>
@@ -828,6 +843,7 @@ app.addEventListener("click", async ev => {
       case "new-trip": return newTrip();
       case "pick-me":
         save(myKey(), b.dataset.id || null);
+        if (b.dataset.id) toast(b.dataset.id === "none" ? "Got it: you're not on this trip." : `Showing the ${famName(b.dataset.id)} family. Tap "Change family" to switch.`);
         // The button that was pressed is gone after this; focus what replaced it.
         return renderTrip(tabNow(), b.dataset.id ? '[data-act="pick-me"][data-id=""]' : '[data-act="pick-me"]');
       case "add-person": {
@@ -860,8 +876,15 @@ app.addEventListener("click", async ev => {
         if (!(await confirmSheet("Reopen this trip?", paid ? "Payments already ticked off will be cleared, and everything is recalculated when you finalize again." : "You can change expenses again, then finalize when you're done.", "Reopen", paid))) return;
         await act(() => api(`/tournaments/${t.id}/reopen`, { method: "POST" }), "Trip reopened"); return refresh("settle");
       }
-      case "toggle-paid":
+      case "toggle-paid": {
+        const x = S.trip.payments.find(p => p.id === id);
+        if (x && x.direction === "out" && b.dataset.paid === "1") {
+          const held = S.trip.payments.reduce((s, p) => s + (p.paid_at ? (p.direction === "in" ? p.amount_cents : -p.amount_cents) : 0), 0);
+          if (x.amount_cents > held && !(await confirmSheet(`Record paying ${esc(famName(x.family_id))} ${money(x.amount_cents)}?`,
+            `So far you've collected ${money(Math.max(held, 0))}, so this would come partly out of your own pocket until the others pay. That's fine if it's what you did.`, "Yes, I sent it"))) return;
+        }
         await act(() => api(`/payments/${id}`, { method: "PATCH", body: { paid: b.dataset.paid === "1" } })); return refresh("treasurer");
+      }
       case "export": {
         b.disabled = true; const label = b.innerHTML; b.innerHTML = `<span class="spinner"></span> Building PDF…`;
         try { const { exportPdf } = await import("./pdf.js"); await exportPdf(S.trip); }
