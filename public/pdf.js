@@ -64,8 +64,12 @@ export async function exportPdf(trip) {
   };
 
   newPage();
-  text("EFC trip expenses", M, y, { size: 9, color: grey }); y -= 22;
-  text(t.name, M, y, { f: bold, size: 18 }); y -= 16;
+  const navy = rgb(0.078, 0.165, 0.298), gold = rgb(0.941, 0.706, 0.161);
+  page.drawRectangle({ x: 0, y: H - 64, width: W, height: 64, color: navy });
+  page.drawRectangle({ x: 0, y: H - 67, width: W, height: 3, color: gold });
+  page.drawText("EFC TRIP EXPENSES", { x: M, y: H - 30, size: 9, font: bold, color: gold });
+  page.drawText(clean(t.name), { x: M, y: H - 52, size: 18, font: bold, color: rgb(1, 1, 1) });
+  y = H - 90;
   text(`${t.location ? t.location + " · " : ""}${day(t.start_date)} - ${day(t.end_date)}, ${t.end_date.slice(0, 4)}`, M, y, { color: grey, size: 10 }); y -= 13;
   text(t.status === "final" ? `Finalized ${new Date(t.finalized_at).toLocaleDateString()} by ${t.finalized_by}` : `DRAFT - not finalized (printed ${new Date().toLocaleDateString()})`, M, y, { color: grey, size: 10 });
   y -= 6;

@@ -205,7 +205,9 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const { results } = await env.DB.prepare(
       `SELECT t.*, (SELECT COALESCE(SUM(amount_cents), 0) FROM expenses e WHERE e.tournament_id = t.id) AS total_cents,
               (SELECT COUNT(*) FROM expenses e WHERE e.tournament_id = t.id) AS expense_count,
-              (SELECT COUNT(*) FROM families f WHERE f.tournament_id = t.id) AS family_count
+              (SELECT COUNT(*) FROM families f WHERE f.tournament_id = t.id) AS family_count,
+              (SELECT COUNT(*) FROM payments p WHERE p.tournament_id = t.id) AS pay_total,
+              (SELECT COUNT(*) FROM payments p WHERE p.tournament_id = t.id AND p.paid_at IS NOT NULL) AS pay_done
        FROM tournaments t ORDER BY t.start_date DESC, t.id DESC`).all();
     return json(results);
   }
