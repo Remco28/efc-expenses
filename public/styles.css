@@ -408,3 +408,8 @@ table.bal tr:last-child td.n b { display: inline-block; border-top: 1px solid va
 #tab.enter > *:nth-child(4) { animation-delay: .09s; }
 #tab.enter > *:nth-child(n+5) { animation-delay: .12s; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+
+/* practice trip banner */
+.practice { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; margin-bottom: 12px; padding: 10px 14px;
+  background: var(--warn-wash); border: 1px dashed var(--gold-deep); border-radius: var(--radius); font-size: 14px; color: var(--ink); }
+.practice > div { flex: 1 1 240px; }

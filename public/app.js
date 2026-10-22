@@ -186,6 +186,7 @@ function renderName() {
 
 // ---------- home ----------
 function tripStatus(t) {
+  if (t.is_sandbox) return `<span class="chip gold">Practice trip</span>`;
   if (t.status === "final") return t.pay_total && t.pay_done < t.pay_total
     ? `<span class="chip gold">Final · ${t.pay_done} of ${t.pay_total} paid</span>` : `<span class="chip ok">${icon("check")} Final · all paid</span>`;
   if (!t.family_count) return `<span class="chip">Setting up</span>`;
@@ -314,7 +315,8 @@ function renderTrip(tab, focusSel = focusKey()) {
   const tabs = [["expenses", "Expenses"], ["families", "Families"], ["settle", "Settle up"], ["treasurer", "Treasurer"]]
     .map(([k, l]) => `<a href="#/t/${t.id}?tab=${k}" class="${k === tab ? "on" : ""}" ${k === tab ? 'aria-current="page"' : ""}>${l}</a>`).join("");
   app.innerHTML = `${bar({ back: "#/", title: t.name, sub: `${range(t)}${t.location ? " · " + t.location : ""}`, right: final() ? `<span class="chip gold">Final</span>` : "" })}
-    <div class="wrap wide"><div class="trip">
+    <div class="wrap wide">${t.is_sandbox ? `<div class="practice"><div><b>Practice trip.</b> Nothing here is real money. Try anything: add expenses, finalize, tick payments. Reset puts it all back.</div>
+      <button class="btn-ghost btn-small" data-act="reset-sandbox">Reset practice trip</button></div>` : ""}<div class="trip">
       <aside class="side stack">${youCard()}${stepsCard()}</aside>
       <div class="main stack"><nav class="tabs" aria-label="Sections">${tabs}</nav><div id="tab" class="stack ${S.lastTab === tab ? "" : "enter"}"></div></div>
     </div></div>`;
@@ -889,6 +891,11 @@ app.addEventListener("click", async ev => {
         await act(() => api(`/expenses/${id}`, { method: "DELETE" }), "Deleted"); S.draft = null; location.hash = `#/t/${t.id}`; return;
       case "drop-receipt": S.draft.receipt_key = null; S.draft.receipt_type = null; S.draft.aiNote = ""; return drawReceipt();
       case "volunteer": return volunteerSheet();
+      case "reset-sandbox":
+        if (!(await confirmSheet("Reset the practice trip?", "Everything anyone added or changed here is removed, and the trip goes back to how it started. This only affects the practice trip.", "Reset", true))) return;
+        await act(() => api(`/tournaments/${t.id}/reset-sandbox`, { method: "POST" }), "Practice trip reset");
+        save(myKey(), null); S.lastTab = null;
+        location.hash = `#/t/${t.id}`; return refresh("expenses");
       case "finalize": {
         if (!(await confirmSheet("Finalize this trip?", `Expenses lock, and everyone settles through ${esc(t.treasurer_name)}. You can reopen it later if something was missed.`, "Finalize"))) return;
         await act(() => api(`/tournaments/${t.id}/finalize`, { method: "POST" }), "Trip finalized");

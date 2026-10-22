@@ -3,6 +3,7 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 // @ts-ignore - plain JS module shared with the browser
 import { BASES, CATEGORIES, balances, treasurerPlan } from "../public/split.js";
+import { SANDBOX } from "./sandbox";
 
 interface Env {
   DB: D1Database;
@@ -136,6 +137,50 @@ async function expenseInput(env: Env, tid: number, b: any) {
   };
 }
 
+// Put the practice trip back to its starting state: everything people added,
+// changed or uploaded is removed, then the seed families and expenses go back in.
+async function resetSandbox(env: Env, req: Request, tid: number, name: string) {
+  const t = await tournament(env, tid);
+  if (!t.is_sandbox) throw new HttpError(403, "Only the practice trip can be reset");
+  // Receipts people uploaded to this trip
+  let cursor: string | undefined;
+  do {
+    const list = await env.RECEIPTS.list({ prefix: `t${tid}/`, cursor });
+    if (list.objects.length) await env.RECEIPTS.delete(list.objects.map(o => o.key));
+    cursor = list.truncated ? list.cursor : undefined;
+  } while (cursor);
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM payments WHERE tournament_id = ?").bind(tid),
+    env.DB.prepare("DELETE FROM expenses WHERE tournament_id = ?").bind(tid),
+    env.DB.prepare("DELETE FROM families WHERE tournament_id = ?").bind(tid),
+    env.DB.prepare("DELETE FROM activity WHERE tournament_id = ?").bind(tid),
+    env.DB.prepare(`UPDATE tournaments SET name = ?, location = ?, start_date = ?, end_date = ?, status = 'open', finalized_at = NULL, finalized_by = NULL,
+      treasurer_name = NULL, treasurer_family_id = NULL, treasurer_notes = '' WHERE id = ?`)
+      .bind(SANDBOX.name, SANDBOX.location, SANDBOX.start_date, SANDBOX.end_date, tid),
+  ]);
+  const fid: Record<string, number> = {};
+  for (const [fname, pay, people] of SANDBOX.families) {
+    const f = await env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes) VALUES (?, ?, ?) RETURNING id").bind(tid, fname, pay).first<any>();
+    fid[fname] = f.id;
+    await env.DB.batch(people.map(([pn, fencer, days, fdays]) =>
+      env.DB.prepare("INSERT INTO people (family_id, name, is_fencer, days, fencing_days) VALUES (?, ?, ?, ?, ?)").bind(f.id, pn, fencer, JSON.stringify(days), JSON.stringify(fdays))));
+  }
+  const everyone = JSON.stringify(Object.fromEntries(Object.values(fid).map(id => [id, null])));
+  const stamp = now();
+  const rows = [];
+  for (const [desc, vendor, date, cat, basis, cents, payer, image] of SANDBOX.expenses) {
+    let key: string | null = null;
+    if (image) {
+      const img = await env.ASSETS.fetch(new URL(image, req.url));
+      if (img.ok) { key = `t${tid}/${crypto.randomUUID()}`; await env.RECEIPTS.put(key, img.body, { httpMetadata: { contentType: "image/jpeg" } }); }
+    }
+    rows.push(env.DB.prepare(`INSERT INTO expenses (tournament_id, description, vendor, date, category, basis, amount_cents, paid_by, split, receipt_key, receipt_type, created_at, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Practice trip')`).bind(tid, desc, vendor, date, cat, basis, cents, fid[payer], everyone, key, key ? "image/jpeg" : null, stamp));
+  }
+  await env.DB.batch(rows);
+  await log(env, tid, name, "reset the practice trip to its starting point");
+}
+
 const ReceiptFields = z.object({
   vendor: z.string().nullable(),
   description: z.string(),
@@ -236,6 +281,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       return json({ ok: true });
     }
     if (method === "DELETE") {
+      if ((await tournament(env, tid)).is_sandbox) throw new HttpError(409, "The practice trip can't be deleted. Reset it instead.");
       await openTournament(env, tid);
       const n = await env.DB.prepare("SELECT COUNT(*) AS n FROM expenses WHERE tournament_id = ?").bind(tid).first<any>();
       if (n.n > 0) throw new HttpError(409, "Delete its expenses first");
@@ -258,6 +304,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       env.DB.prepare("UPDATE tournaments SET status = 'final', finalized_at = ?, finalized_by = ? WHERE id = ?").bind(now(), name, tid),
     ]);
     await log(env, tid, name, `finalized ${t.name}`);
+    return json({ ok: true });
+  }
+  if ((m = path.match(/^\/tournaments\/(\d+)\/reset-sandbox$/)) && method === "POST") {
+    await resetSandbox(env, req, Number(m[1]), name);
     return json({ ok: true });
   }
   if ((m = path.match(/^\/tournaments\/(\d+)\/reopen$/)) && method === "POST") {
