@@ -34,9 +34,10 @@ const ICON = {
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 00-1-1H5a1 1 0 00-1 1v10a1 1 0 001 1h3"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>', edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>', sword: '<path d="M14 4h6v6L9 21l-2-2-2 2-2-2 2-2-2-2L14 4z"/>',
   flag: '<path d="M5 21V4h11l-2 4 2 4H5"/>',
+  whistle: '<circle cx="8" cy="14" r="5"/><path d="M11 10l10-4v5l-8 3"/><circle cx="8" cy="14" r="1.3"/>',
 };
 const icon = (n, cls = "i") => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
-const CAT_ICON = { meal: "meal", coach_travel: "plane", coach_stay: "bed", transport: "car", supplies: "box", other: "tag" };
+const CAT_ICON = { meal: "meal", coach_travel: "plane", coach_stay: "whistle", transport: "car", supplies: "box", other: "tag" };
 const MARK = `<svg class="mark" viewBox="0 0 64 64" aria-hidden="true"><path d="M32 3l25 9v17c0 16-11 27-25 32C18 56 7 45 7 29V12z" fill="#1f3d6b" stroke="#f0b429" stroke-width="3"/>
   <path d="M20 44L42 18M42 18l-1 7M42 18l-7 1M23 37l5 5" stroke="#f0b429" stroke-width="3.2" stroke-linecap="round" fill="none"/><circle cx="20" cy="44" r="3" fill="#f0b429"/></svg>`;
 
@@ -81,7 +82,10 @@ function sheet({ title, lead = "", body = "", ok = "Save", okClass = "btn-primar
     const done = v => { back.remove(); document.removeEventListener("keydown", onKey); prev?.focus?.(); resolve(v); };
     const onKey = e => { if (e.key === "Escape") done(null); };
     document.addEventListener("keydown", onKey);
-    back.addEventListener("click", e => { if (e.target === back || e.target.closest("[data-x]")) done(null); });
+    let dirty = false;
+    form.addEventListener("input", () => { dirty = true; });
+    // A tap outside closes the panel only if nothing has been typed; Cancel always does.
+    back.addEventListener("click", e => { if (e.target.closest("[data-x]") || (e.target === back && !dirty)) done(null); });
     form.addEventListener("submit", e => {
       e.preventDefault();
       const bad = [...form.querySelectorAll("[required]")].find(i => !i.value.trim());
@@ -126,12 +130,12 @@ async function route() {
 
 async function loadTrip(id) { S.trip = await api(`/tournaments/${id}`); }
 const tabNow = () => new URLSearchParams(location.hash.split("?")[1] || "").get("tab") || "expenses";
-async function refresh(tab = tabNow()) { await loadTrip(S.trip.tournament.id); renderTrip(tab); }
+async function refresh(tab = tabNow()) { const f = focusKey(); await loadTrip(S.trip.tournament.id); renderTrip(tab, f); }
 
 function bar({ back, title, sub, right = "" }) {
   return `<header class="bar"><div class="bar-in">
     ${back ? `<a class="back" href="${back}" aria-label="Back">${icon("back")}</a>` : MARK}
-    <div class="title"><div class="t">${esc(title)}</div>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</div>${right}</div></header>`;
+    <div class="title"><h1 class="t">${esc(title)}</h1>${sub ? `<div class="s">${esc(sub)}</div>` : ""}</div>${right}</div></header>`;
 }
 
 // ---------- sign-in ----------
@@ -145,8 +149,10 @@ function renderLogin() {
     </form></div>`;
   document.getElementById("login").onsubmit = async ev => {
     ev.preventDefault();
-    try { await api("/login", { method: "POST", body: { code: document.getElementById("code").value } }); route(); }
-    catch (e) { toast(e.message); }
+    const btn = ev.target.querySelector("button");
+    btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Checking…`;
+    try { await api("/login", { method: "POST", body: { code: document.getElementById("code").value } }); await route(); }
+    catch (e) { toast(e.message); btn.disabled = false; btn.textContent = "Continue"; }
   };
   document.getElementById("code").focus();
 }
@@ -183,7 +189,7 @@ function renderHome() {
       <div class="muted small">${esc(range(t))}${t.location ? " · " + esc(t.location) : ""}</div>
       <div class="head" style="margin:10px 0 0"><span class="faint small">${plural(t.expense_count, "expense", "expenses")} · <span class="num">${money(t.total_cents)}</span></span>${tripStatus(t)}</div>
     </a>`).join("");
-  app.innerHTML = `${bar({ title: "EFC Trip Expenses", sub: "Team travel costs, split fairly", right: `<button class="who-btn" data-act="rename" title="Change your name">${esc(S.name)}</button>` })}
+  app.innerHTML = `${bar({ title: "EFC Trip Expenses", sub: "Team travel costs", right: `<button class="who-btn" data-act="rename" title="Change your name">${esc(S.name)}</button>` })}
     <div class="wrap"><div class="stack">
       <div class="head"><h2>Trips</h2><button class="btn-primary btn-small" data-act="new-trip">${icon("plus")} New trip</button></div>
       ${S.list.length ? cards : `<div class="card empty"><div class="ic">${icon("flag")}</div><b>No trips yet</b>Start one for the next tournament. Anyone on the team can.
@@ -245,10 +251,11 @@ function youCard() {
   if (!families.length) return "";
   const me = myFamily();
   if (!me) return `<div class="card you"><div class="eyebrow">Your family</div>
-    <p style="margin:6px 0 10px">Which family are you? We'll show what you owe right here.</p>
+    <p style="margin:6px 0 4px">Which family are you? Pick one and we'll show what you owe right here.</p>
+    <p class="hint" style="margin:0 0 10px">This only changes what this phone shows you. It doesn't change anything for anyone else.</p>
     <div class="pills">${families.map(f => `<button data-act="pick-me" data-id="${f.id}">${esc(f.name)}</button>`).join("")}
       <button data-act="pick-me" data-id="none">Not on this trip</button></div></div>`;
-  const change = `<button class="link small" data-act="pick-me" data-id="">Change</button>`;
+  const change = `<button class="link small tap" data-act="pick-me" data-id="">Change family</button>`;
   if (me === "none") return `<div class="card you"><div class="head" style="margin:0"><span class="muted">You're not on this trip.</span>${change}</div></div>`;
   const r = balances(expenses, families).rows[me.id];
   const head = `<div class="head" style="margin-bottom:4px"><span class="eyebrow">${esc(me.name)} family</span>${change}</div>`;
@@ -265,17 +272,32 @@ function youCard() {
     if (x.direction === "in") return `<div class="card you">${head}
       <div class="head" style="margin:0"><div><div class="muted small">Pay ${esc(t.treasurer_name)}</div><div class="big">${money(x.amount_cents)}</div></div>${done}</div>
       <div class="sendto"><b>Send to:</b> ${t.treasurer_notes ? esc(t.treasurer_notes) : `<span class="faint">${esc(t.treasurer_name)} hasn't added payment details yet.</span>`}</div>
-      ${x.paid_at ? "" : `<p class="hint">${esc(t.treasurer_name)} ticks it off when your payment arrives.</p>`}</div>`;
+      ${x.paid_at ? "" : `<p class="hint">${esc(t.treasurer_name)} ticks it off when your payment arrives.</p>`}
+      <a class="link small tap" href="#/t/${t.id}?tab=settle&open=${me.id}">How was this worked out?</a></div>`;
     return `<div class="card you">${head}
       <div class="head" style="margin:0"><div><div class="muted small">${esc(t.treasurer_name)} pays you</div><div class="big get">${money(x.amount_cents)}</div></div>${done}</div>
       <div class="sendto"><b>How to pay you:</b> ${me.pay_notes ? esc(me.pay_notes) : `<span class="faint">not added yet</span>`} <button class="link small" data-act="pay-notes" data-id="${me.id}">${me.pay_notes ? "Edit" : "Add"}</button></div></div>`;
   }
   const line = r.net < 0 ? `You'd owe <b class="owe">${money(-r.net)}</b>` : r.net > 0 ? `You'd get back <b class="get">${money(r.net)}</b>` : "You'd be all square";
   return `<div class="card you">${head}<div class="muted small">If the trip ended now</div><div class="big" style="font-size:22px">${line}</div>
-    <div class="figures"><div>Your share<b>${money(r.owed)}</b></div><div>You've paid<b>${money(r.paid)}</b></div></div></div>`;
+    <div class="figures"><div>Your share<b>${money(r.owed)}</b></div><div>You've paid<b>${money(r.paid)}</b></div></div>
+    <a class="link small tap" href="#/t/${t.id}?tab=settle&open=${me.id}">How was this worked out?</a></div>`;
 }
 
-function renderTrip(tab) {
+// Re-rendering replaces the page, which would drop keyboard focus to the top.
+// Remember the focused control by what it does, and focus its replacement.
+function focusKey() {
+  const a = document.activeElement;
+  if (!a || a === document.body) return null;
+  const sel = ["act", "id", "day", "kind", "basis", "fam", "inc", "units"].filter(k => a.dataset?.[k] != null).map(k => `[data-${k}="${a.dataset[k]}"]`).join("");
+  return sel || (a.id ? "#" + a.id : null);
+}
+function restoreFocus(sel, fallback) {
+  const el = (sel && document.querySelector(sel)) || (fallback && document.querySelector(fallback));
+  if (el) el.focus({ preventScroll: !!sel && !!document.querySelector(sel) });
+}
+
+function renderTrip(tab, focusSel = focusKey()) {
   const { tournament: t } = S.trip;
   const tabs = [["expenses", "Expenses"], ["families", "Families"], ["settle", "Settle up"], ["treasurer", "Treasurer"]]
     .map(([k, l]) => `<a href="#/t/${t.id}?tab=${k}" class="${k === tab ? "on" : ""}" ${k === tab ? 'aria-current="page"' : ""}>${l}</a>`).join("");
@@ -285,6 +307,7 @@ function renderTrip(tab) {
       <div class="main stack"><nav class="tabs" aria-label="Sections">${tabs}</nav><div id="tab" class="stack"></div></div>
     </div></div>`;
   ({ expenses: tabExpenses, families: tabFamilies, settle: tabSettle, treasurer: tabTreasurer })[tab]?.(document.getElementById("tab"));
+  if (focusSel) restoreFocus(focusSel);
 }
 
 // ---------- expenses ----------
@@ -308,7 +331,7 @@ function tabExpenses(el) {
         <div class="grow"><div class="what">${esc(e.description)}</div>
           <div class="meta">${esc(famName(e.paid_by))} paid · ${bad.has(e.id) ? `<span class="owe">nobody included</span>` : `${BASES[e.basis].label.toLowerCase()}, ${plural(s.total, BASES[e.basis].unit, BASES[e.basis].units)}`}</div></div>
         <div><div class="amt">${money(e.amount_cents)}</div>
-          <div class="rc ${e.receipt_key ? "has" : ""}">${icon(e.receipt_key ? "receipt" : "nore")}${e.receipt_key ? "Receipt" : "None"}</div></div></a>`; }).join("")}`).join("");
+          <div class="rc ${e.receipt_key ? "has" : ""}">${icon(e.receipt_key ? "receipt" : "nore")}${e.receipt_key ? "Receipt" : "No receipt"}</div></div></a>`; }).join("")}`).join("");
   el.innerHTML = `
     ${!t.treasurer_name && expenses.length && !final() ? needTreasurerCallout(t) : ""}
     <div class="card">
@@ -327,7 +350,7 @@ function tabFamilies(el) {
   const famCard = f => `
     <div class="card">
       <div class="head" style="margin-bottom:2px"><h2>${esc(f.name)}</h2>
-        <button class="btn-ghost btn-small" data-act="edit-family" data-id="${f.id}">${icon("edit")} Edit</button></div>
+        <button class="btn-ghost btn-small" data-act="edit-family" data-id="${f.id}" aria-label="${ro ? "Payment details for" : "Edit"} the ${esc(f.name)} family">${icon("edit")} ${ro ? "Payment details" : "Edit"}</button></div>
       <div class="paynote">How to pay this family: ${f.pay_notes ? esc(f.pay_notes) : `<span class="faint">not added yet</span>`}</div>
       <div style="margin-top:10px">${f.people.map(p => `
         <button class="member" data-act="edit-person" data-id="${p.id}" ${ro ? "disabled" : ""}>
@@ -419,6 +442,7 @@ async function familySheet(id) {
   const f = S.trip.families.find(x => x.id === id);
   const v = await sheet({
     title: `${esc(f.name)} family`, ok: "Save",
+    lead: final() ? "This trip is final, so only payment details can change. Reopen the trip from Settle up to change anything else." : "",
     body: `${final() ? "" : `<label class="f" for="fn" style="margin-top:0">Family name</label><input id="fn" name="name" value="${esc(f.name)}" required>`}
       <label class="f" for="fp" ${final() ? 'style="margin-top:0"' : ""}>How should the treasurer pay this family? <span class="opt">(optional)</span></label>
       <input id="fp" name="pay_notes" value="${esc(f.pay_notes)}" placeholder="e.g. Venmo @lisa-chen or Zelle 555-0100">
@@ -487,7 +511,7 @@ function renderEditor(id) {
       </div>
       <div class="section"><h2><span class="n">4</span>How is it shared?</h2>
         <div class="choices" id="basis" role="radiogroup" aria-label="How it's split"></div>
-        <label class="f">Who's included</label><div id="split"></div>
+        <label class="f">Who's sharing this cost?</label><div id="split"></div>
         <p class="hint" id="splithint"></p>
       </div>
       ${id ? `<div class="section"><button type="button" class="btn-danger btn-block" data-act="del-expense" data-id="${id}">Delete this expense</button>
@@ -529,16 +553,21 @@ function drawSplit() {
     return `<div class="r ${inc && n ? "" : "off"}"><input type="checkbox" data-inc="${f.id}" ${inc ? "checked" : ""} aria-label="Include the ${esc(f.name)} family">
       <span class="nm">${esc(f.name)}</span>
       <input type="number" min="0" step="1" inputmode="numeric" data-units="${f.id}" value="${set ?? ""}" placeholder="${d.basis === "custom" ? "0" : auto}" ${inc ? "" : "disabled"} aria-label="${esc(BASES[d.basis].units)} for ${esc(f.name)}">
-      <span class="amt">${inc && n && amount ? money(s.shares[f.id]) : "—"}</span></div>`;
+      <span class="amt">${!inc ? `<span class="faint small">Not sharing</span>` : n && amount ? money(s.shares[f.id]) : "—"}</span></div>`;
   }).join("")}<div class="tot"><span>${unit(s.total)}</span><span>${s.total && amount ? `${money(Math.round(amount / s.total))} each` : ""}</span></div></div>`;
-  document.getElementById("splithint").textContent = d.basis === "custom" ? "Untick any family that isn't sharing this."
-    : "The grey numbers come from who's on the trip. Type over one to change it, or untick a family that isn't sharing this.";
+  document.getElementById("splithint").textContent = d.basis === "custom" ? "Untick any family that isn't sharing this cost."
+    : `The numbers are filled in from who's on the trip (${BASES[d.basis].units}). Type a different number to change one, or untick a family that isn't sharing this cost.`;
   document.getElementById("sum").innerHTML = amount
     ? `<b>${money(amount)}</b>${s.total ? `split between ${plural(Object.keys(s.units).length, "family", "families")}` : `<span class="owe">Nobody included yet</span>`}`
     : `<b>Enter the amount</b>then pick who paid`;
   el.onchange = ev => {
     const c = ev.target.closest("[data-inc]");
-    if (c) { if (c.checked) d.split[c.dataset.inc] = d.basis === "custom" ? 1 : null; else delete d.split[c.dataset.inc]; drawSplit(); }
+    if (!c) return;
+    const f = families.find(x => x.id === Number(c.dataset.inc));
+    // Ticking a family the trip says wasn't there would count 0 and look broken; start it at 1.
+    if (c.checked) d.split[c.dataset.inc] = d.basis === "custom" || !autoUnits(d.basis, f, d.date) ? 1 : null; else delete d.split[c.dataset.inc];
+    drawSplit();
+    el.querySelector(`[data-${c.checked ? "units" : "inc"}="${c.dataset.inc}"]`)?.focus();
   };
   el.oninput = ev => {
     const u = ev.target.closest("[data-units]"); if (!u) return;
@@ -563,7 +592,7 @@ function drawReceipt(state = "") {
     ? `<p class="muted"><span class="spinner"></span> Uploading the receipt…</p>`
     : `<label class="receipt-pick"><span class="big">${icon("camera")} Take a photo or choose a file</span>
          We'll read the receipt and fill in the form for you. PDFs work too.
-         <input type="file" id="file" accept="image/*,application/pdf" hidden></label>
+         <input type="file" id="file" class="visually-hidden" accept="image/*,application/pdf"></label>
        <p class="hint">No receipt? Skip this and fill in the form.</p>`;
   const input = document.getElementById("file");
   if (input) input.onchange = () => input.files[0] && uploadReceipt(input.files[0], t.id);
@@ -656,7 +685,8 @@ function finalMessage(t) {
   const lines = [`${t.name} expenses are final.`];
   if (ins.length) lines.push(`Please pay ${t.treasurer_name}: ${ins.map(x => `${famName(x.family_id)} ${money(x.amount_cents)}`).join(", ")}.`);
   if (t.treasurer_notes) lines.push(`Send to: ${t.treasurer_notes}`);
-  if (outs.length) lines.push(`${t.treasurer_name} will pay: ${outs.map(x => `${famName(x.family_id)} ${money(x.amount_cents)}`).join(", ")}.`);
+  const how = id => S.trip.families.find(f => f.id === id)?.pay_notes;
+  if (outs.length) lines.push(`${t.treasurer_name} will send money back to: ${outs.map(x => `${famName(x.family_id)} ${money(x.amount_cents)}${how(x.family_id) ? ` (${how(x.family_id)})` : ""}`).join(", ")}.`);
   lines.push(`Details: ${tripUrl(t, "settle")}`);
   return lines.join("\n");
 }
@@ -678,7 +708,8 @@ function tabSettle(el) {
   const todo = families.map(f => {
     const x = byFam.get(f.id);
     let what;
-    if (t.treasurer_name && f.id === t.treasurer_family_id) what = `<span class="muted">Treasurer's family, settled in the pot</span>`;
+    if (t.treasurer_name && f.id === t.treasurer_family_id) what = rows[f.id].net > 0 ? `Keeps <b class="get">${money(rows[f.id].net)}</b> of what the treasurer collects (it's the treasurer's family)`
+      : rows[f.id].net < 0 ? `Adds <b>${money(-rows[f.id].net)}</b> to what the treasurer collects (it's the treasurer's family)` : `<span class="muted">All square (the treasurer's family)</span>`;
     else if (!x) what = `<span class="muted">All square</span>`;
     else if (!t.treasurer_name) what = x.direction === "in" ? `Owes <b>${money(x.amount_cents)}</b>` : `Is owed <b>${money(x.amount_cents)}</b>`;
     else what = x.direction === "in" ? `Pays ${esc(t.treasurer_name)} <b>${money(x.amount_cents)}</b>` : `Gets <b class="get">${money(x.amount_cents)}</b> from ${esc(t.treasurer_name)}`;
@@ -690,7 +721,8 @@ function tabSettle(el) {
       return `<tr><td>${esc(e.description)}<div class="faint small">${s.units[f.id]} of ${plural(s.total, BASES[e.basis].unit, BASES[e.basis].units)}</div></td><td class="n">${money(s.shares[f.id])}</td></tr>`;
     }).join("");
     const r = rows[f.id];
-    return `<details><summary>${esc(f.name)}</summary><table class="t">${lines || `<tr><td class="faint">Not included in anything</td><td></td></tr>`}
+    const openIt = new URLSearchParams(location.hash.split("?")[1] || "").get("open") === String(f.id);
+    return `<details ${openIt ? "open" : ""} id="bd-${f.id}"><summary><span style="flex:1">${esc(f.name)}</span><span class="faint small">${r.net < 0 ? "owes" : r.net > 0 ? "is owed" : "even"} ${money(Math.abs(r.net))} · details</span></summary><table class="t">${lines || `<tr><td class="faint">Not included in anything</td><td></td></tr>`}
       <tr><td>Their share</td><td class="n">${money(r.owed)}</td></tr><tr><td>They paid</td><td class="n">${money(r.paid)}</td></tr>
       <tr><td><b>${r.net < 0 ? "They owe" : r.net > 0 ? "They're owed" : "Balance"}</b></td><td class="n"><b>${money(Math.abs(r.net))}</b></td></tr></table></details>`;
   };
@@ -708,9 +740,9 @@ function tabSettle(el) {
         <td class="n ${r.net > 0 ? "get" : r.net < 0 ? "owe" : ""}"><b>${r.net > 0 ? "+" : ""}${money(r.net)}</b></td></tr>`; }).join("")}
         <tr><td><b>Total</b></td><td class="n"><b>${money(total)}</b></td><td class="n"><b>${money(total)}</b></td><td></td></tr></table>
       <p class="hint">Share is the family's part of every expense. Paid is what they put on their own card. A plus means they're owed money, a minus means they owe.</p></div>
-    <div class="card"><h2>Each family's breakdown</h2>${families.map(statement).join("")}</div>
+    <div class="card"><h2>Each family's breakdown</h2><p class="muted small" style="margin-top:-4px">Tap a family to see every expense they share and how much of it is theirs.</p>${families.map(statement).join("")}</div>
     ${final() ? `<div class="card"><h2>Finished</h2><p class="muted small">The trip is locked. Copy the payment list into the team chat, or download the record with every receipt.</p>
-        <div class="row-actions"><button class="btn-primary" data-act="copy-final">${icon("copy")} Copy message for the team chat</button>
+        <div class="row-actions"><button class="btn-primary" data-act="copy-final">${icon("copy")} Copy payment list</button>
         <button class="btn-ghost" data-act="export">${icon("download")} Download PDF record</button></div>
         <div class="row-actions"><button class="link" data-act="reopen">Reopen the trip to make changes</button></div></div>`
       : `<div class="card"><h2>Finalize</h2><p class="muted small">When every expense is in, finalize the trip. Expenses lock and each family gets one payment to make or receive.</p>
@@ -753,23 +785,24 @@ function tabTreasurer(el) {
       <table class="t"><tr><td>Collected</td><td class="n"><b>${money(sum(ins, true))}</b> of ${money(sum(ins))}</td></tr>
         <tr><td>Paid out</td><td class="n"><b>${money(sum(outs, true))}</b> of ${money(sum(outs))}</td></tr>
         <tr><td>In hand right now</td><td class="n"><b>${money(sum(ins, true) - sum(outs, true))}</b></td></tr></table>
-      <p class="hint">${t.treasurer_family_id ? `Your own family's balance is ${mine >= 0 ? `+${money(mine)}, so keep that much of what's left at the end` : `${money(mine)}, so add that much yourself`}. The pot comes out exactly even.` : "Everything collected gets paid out, so the pot ends at $0.00."}</p></div>`
+      <p class="hint">${t.treasurer_family_id ? `The treasurer's own family (${esc(famName(t.treasurer_family_id))}) ${mine >= 0 ? `is owed ${money(mine)}, so the treasurer keeps that much of what's left at the end` : `owes ${money(-mine)}, so the treasurer adds that much themselves`}. After that, nothing is left over.` : "Everything collected gets paid out, so nothing is left over at the end."}</p></div>`
       : `<div class="callout">Nothing to collect yet. Once the trip is finalized, this becomes your checklist: tick each family as their payment arrives and as you pay people back.</div>`}
     <div class="card"><h2>${final() ? "Collect from" : "You'll collect from"}</h2>${final() ? `<p class="muted small" style="margin-top:-4px">Tick each one when the money arrives.</p>` : ""}${ins.map(row).join("") || `<p class="faint">Nobody owes anything.</p>`}</div>
     <div class="card"><h2>${final() ? "Pay back" : "You'll pay back"}</h2>${final() ? `<p class="muted small" style="margin-top:-4px">Tick each one once you've sent it.</p>` : ""}${outs.map(row).join("") || `<p class="faint">Nobody is owed anything.</p>`}</div>
-    ${final() ? `<button class="btn-primary btn-block" data-act="copy-final">${icon("copy")} Copy payment list for the team chat</button>` : ""}`;
+    ${final() ? `<button class="btn-primary btn-block" data-act="copy-final">${icon("copy")} Copy payment list</button>` : ""}`;
 }
 
 async function volunteerSheet() {
   const t = S.trip.tournament, fams = S.trip.families, me = myFamily();
-  const famPick = t.treasurer_name ? t.treasurer_family_id : me && me !== "none" ? me.id : null;
+  const byName = fams.find(f => new RegExp(`\\b${f.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(S.name));
+  const famPick = t.treasurer_name ? t.treasurer_family_id : me && me !== "none" ? me.id : byName?.id ?? null;
   const v = await sheet({
     title: t.treasurer_name ? "Treasurer details" : "Be the treasurer", ok: t.treasurer_name ? "Save" : "Confirm",
     lead: final() ? "The treasurer can't change once the trip is final, but you can update where families send money." : "",
     body: `${final() ? "" : `<label class="f" for="tn" style="margin-top:0">Treasurer's name</label><input id="tn" name="treasurer_name" value="${esc(t.treasurer_name || S.name)}" required>
       <label class="f" for="tf">Their family on this trip</label><select id="tf" name="treasurer_family_id"><option value="">Not on this trip</option>
         ${fams.map(f => `<option value="${f.id}" ${famPick === f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select>
-      <p class="hint">If their family is on the trip, it doesn't pay itself. It just keeps or adds the difference at the end.</p>`}
+      <p class="hint">${famPick && !t.treasurer_name ? `We guessed ${esc(famName(famPick))} from your name; change it if that's wrong. ` : ""}If their family is on the trip, it doesn't pay itself. It just keeps or adds the difference at the end.</p>`}
       <label class="f" for="tnotes" ${final() ? 'style="margin-top:0"' : ""}>Where should families send money?</label>
       <input id="tnotes" name="treasurer_notes" value="${esc(t.treasurer_notes || "")}" placeholder="e.g. Venmo @lisa-chen or Zelle 555-0100">`,
     extra: t.treasurer_name && !final() ? `<div class="row-actions"><button type="button" class="link danger" data-sheet-act="remove">Step down as treasurer</button></div>` : "",
@@ -813,7 +846,7 @@ app.addEventListener("click", async ev => {
         if (!(await confirmSheet("Finalize this trip?", `Expenses lock, and everyone settles through ${esc(t.treasurer_name)}. You can reopen it later if something was missed.`, "Finalize"))) return;
         await act(() => api(`/tournaments/${t.id}/finalize`, { method: "POST" }), "Trip finalized");
         await refresh("settle");
-        if (await confirmSheet("Let everyone know", "Copy the payment list and paste it into the team chat.", "Copy message", false)) copy(finalMessage(S.trip.tournament));
+        if (await confirmSheet("Let everyone know", "Copy the list of who pays what, then paste it into the team chat.", "Copy payment list", false)) copy(finalMessage(S.trip.tournament));
         return;
       }
       case "copy-final": return copy(finalMessage(t));
