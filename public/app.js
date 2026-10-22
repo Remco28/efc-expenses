@@ -276,10 +276,10 @@ function renderHome() {
     </a>`).join("");
   app.innerHTML = `${bar({ title: "EFC Trip Expenses", sub: "Team travel costs", right: `<button class="who-btn" data-act="rename" title="Change your name">${esc(S.name)}</button>` })}
     <div class="wrap"><div class="stack">
-      <div class="head"><h2>Trips</h2><span style="display:flex;gap:8px"><button class="btn-ghost btn-small" data-act="tour">How it works</button><button class="btn-primary btn-small" data-act="new-trip">${icon("plus")} New trip</button></span></div>
+      <div class="head trips-head"><h2>Trips</h2><button class="btn-primary btn-small" data-act="new-trip">${icon("plus")} New trip</button></div>
       ${S.list.length ? cards : `<div class="card empty"><div class="ic">${icon("flag")}</div><b>No trips yet</b>Start one for the next tournament. Anyone on the team can.
         <div class="row-actions"><button class="btn-primary" data-act="new-trip">${icon("plus")} New trip</button></div></div>`}
-      <p class="hint" style="text-align:center"><a href="#/deleted">Recently deleted trips</a></p>
+      <p class="hint home-links"><button class="link small" data-act="tour">How it works</button><span aria-hidden="true">·</span><a href="#/deleted">Recently deleted trips</a></p>
     </div></div>`;
 }
 
