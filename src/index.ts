@@ -55,6 +55,12 @@ async function body(req: Request): Promise<any> {
 const isDate = (s: unknown) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
 const str = (v: unknown, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
+async function dropReceipt(env: Env, key: string | null) {
+  if (!key) return;
+  const used = await env.DB.prepare("SELECT 1 FROM expenses WHERE receipt_key = ? LIMIT 1").bind(key).first();
+  if (!used) await env.RECEIPTS.delete(key);
+}
+
 async function log(env: Env, tid: number | null, name: string, what: string) {
   await env.DB.prepare("INSERT INTO activity (tournament_id, at, who, what) VALUES (?, ?, ?, ?)")
     .bind(tid, now(), name, what).run();
@@ -71,7 +77,11 @@ async function tournament(env: Env, id: number, { includeDeleted = false } = {})
 
 // Remove a trip for good: its receipts in R2, then its rows (children first,
 // because expenses point at families).
-async function purgeTrip(env: Env, tid: number) {
+async function purgeTrip(env: Env, tid: number, deletedBefore?: string) {
+  if (deletedBefore) {
+    const still = await env.DB.prepare("SELECT 1 FROM tournaments WHERE id = ? AND deleted_at IS NOT NULL AND deleted_at < ?").bind(tid, deletedBefore).first();
+    if (!still) return;
+  }
   let cursor: string | undefined;
   do {
     const list = await env.RECEIPTS.list({ prefix: `t${tid}/`, cursor });
@@ -83,7 +93,7 @@ async function purgeTrip(env: Env, tid: number) {
     env.DB.prepare("DELETE FROM expenses WHERE tournament_id = ?").bind(tid),
     env.DB.prepare("DELETE FROM families WHERE tournament_id = ?").bind(tid),
     env.DB.prepare("DELETE FROM activity WHERE tournament_id = ?").bind(tid),
-    env.DB.prepare("DELETE FROM tournaments WHERE id = ?").bind(tid),
+    env.DB.prepare(`DELETE FROM tournaments WHERE id = ?${deletedBefore ? " AND deleted_at IS NOT NULL" : ""}`).bind(tid),
   ]);
 }
 
@@ -92,7 +102,7 @@ async function purgeTrip(env: Env, tid: number) {
 async function purgeExpired(env: Env) {
   const cutoff = new Date(Date.now() - KEEP_DELETED_DAYS * 864e5).toISOString();
   const old = await env.DB.prepare("SELECT id FROM tournaments WHERE deleted_at IS NOT NULL AND deleted_at < ? LIMIT 1").bind(cutoff).first<any>();
-  if (old) await purgeTrip(env, old.id);
+  if (old) await purgeTrip(env, old.id, cutoff);
 }
 
 async function openTournament(env: Env, id: number) {
@@ -104,6 +114,7 @@ async function openTournament(env: Env, id: number) {
 async function familyTournament(env: Env, familyId: number) {
   const row = await env.DB.prepare("SELECT tournament_id FROM families WHERE id = ?").bind(familyId).first<any>();
   if (!row) throw new HttpError(404, "No such family");
+  await tournament(env, row.tournament_id);          // 404s for a deleted trip
   return row.tournament_id as number;
 }
 
@@ -140,21 +151,27 @@ async function familyIds(env: Env, tid: number) {
   return new Set(results.map(r => r.id as number));
 }
 
+const has = (o: object, k: unknown) => typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
+const RECEIPT_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+
 async function expenseInput(env: Env, tid: number, b: any) {
   const ids = await familyIds(env, tid);
   const { results: staffRows } = await env.DB.prepare("SELECT id FROM families WHERE tournament_id = ? AND kind = 'staff'").bind(tid).all<any>();
   const staffIds = new Set(staffRows.map(x => x.id as number));
   const amount = Math.round(Number(b.amount_cents));
   if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Amount must be more than zero");
-  if (!(b.basis in BASES)) throw new HttpError(400, "Unknown split");
-  if (!(b.category in CATEGORIES)) throw new HttpError(400, "Unknown category");
+  if (!has(BASES, b.basis)) throw new HttpError(400, "Unknown split");
+  if (!has(CATEGORIES, b.category)) throw new HttpError(400, "Unknown category");
   if (!ids.has(Number(b.paid_by))) throw new HttpError(400, "Pick the family that paid");
   const split: Record<string, number | null> = {};
   for (const [k, v] of Object.entries(b.split || {})) {
     if (!ids.has(Number(k)) || staffIds.has(Number(k))) continue;
-    split[k] = v == null ? null : Math.max(0, Number(v) || 0);
+    const n = Number(v);
+    if (v != null && (!Number.isFinite(n) || n < 0 || n > 1000)) throw new HttpError(400, "Shares must be between 0 and 1000");
+    split[k] = v == null ? null : n;
   }
-  if (!Object.keys(split).length) throw new HttpError(400, "Include at least one family");
+  // An empty split means everyone on automatic, except for custom splits, which are all hand-set.
+  if (b.basis === "custom" && !Object.values(split).some(v => (v ?? 0) > 0)) throw new HttpError(400, "Give at least one family a share");
   return {
     description: str(b.description) || CATEGORIES[b.category].label,
     vendor: str(b.vendor),
@@ -164,8 +181,8 @@ async function expenseInput(env: Env, tid: number, b: any) {
     amount_cents: amount,
     paid_by: Number(b.paid_by),
     split: JSON.stringify(split),
-    receipt_key: typeof b.receipt_key === "string" && b.receipt_key.startsWith(`t${tid}/`) ? b.receipt_key : null,
-    receipt_type: str(b.receipt_type, 60) || null,
+    receipt_key: typeof b.receipt_key === "string" && new RegExp(`^t${tid}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`).test(b.receipt_key) ? b.receipt_key : null,
+    receipt_type: RECEIPT_TYPES.includes(b.receipt_type) ? b.receipt_type : null,
   };
 }
 
@@ -321,8 +338,18 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const start = isDate(b.start_date) ? b.start_date : t.start_date;
       const end = isDate(b.end_date) ? b.end_date : t.end_date;
       if (end < start) throw new HttpError(400, "Check the dates");
-      await env.DB.prepare("UPDATE tournaments SET name = ?, location = ?, start_date = ?, end_date = ? WHERE id = ?")
-        .bind(str(b.name) || t.name, b.location == null ? t.location : str(b.location), start, end, tid).run();
+      // Days outside new dates come off everyone's attendance and fencing days, so
+      // no split keeps counting a day nobody can see or untick any more.
+      const keep = (list: string) => JSON.stringify((JSON.parse(list) as string[]).filter(d => d >= start && d <= end));
+      const { results: fams } = await env.DB.prepare("SELECT id, days FROM families WHERE tournament_id = ?").bind(tid).all<any>();
+      const { results: ppl } = await env.DB.prepare("SELECT p.id, p.days, p.fencing_days FROM people p JOIN families f ON f.id = p.family_id WHERE f.tournament_id = ?").bind(tid).all<any>();
+      await env.DB.batch([
+        env.DB.prepare("UPDATE tournaments SET name = ?, location = ?, start_date = ?, end_date = ? WHERE id = ?")
+          .bind(str(b.name) || t.name, b.location == null ? t.location : str(b.location), start, end, tid),
+        ...fams.filter(f => keep(f.days) !== f.days).map(f => env.DB.prepare("UPDATE families SET days = ? WHERE id = ?").bind(keep(f.days), f.id)),
+        ...ppl.filter(p => keep(p.days) !== p.days || keep(p.fencing_days) !== p.fencing_days)
+          .map(p => env.DB.prepare("UPDATE people SET days = ?, fencing_days = ? WHERE id = ?").bind(keep(p.days), keep(p.fencing_days), p.id)),
+      ]);
       await log(env, tid, name, "edited the tournament details");
       return json({ ok: true });
     }
@@ -339,6 +366,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const tid = Number(m[1]);
     const t = await openTournament(env, tid);
     if (!t.treasurer_name) throw new HttpError(409, "Someone needs to be the treasurer before the trip can be finalized");
+    // Every change to a trip writes an activity row; if one lands while we're
+    // working out the payments, undo and ask them to try again.
+    const lastChange = () => env.DB.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM activity WHERE tournament_id = ?").bind(tid).first<any>().then(r => r.n);
+    const before = await lastChange();
     const trip = await loadTrip(env, tid);
     const { rows, perExpense } = balances(trip.expenses, trip.families);
     if (trip.expenses.some((e: any) => perExpense[e.id].total === 0)) throw new HttpError(409, "An expense has nobody included. Fix it first.");
@@ -347,8 +378,15 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       env.DB.prepare("DELETE FROM payments WHERE tournament_id = ?").bind(tid),
       ...plan.map((x: any) => env.DB.prepare("INSERT INTO payments (tournament_id, family_id, direction, amount_cents) VALUES (?, ?, ?, ?)")
         .bind(tid, x.family_id, x.direction, x.amount_cents)),
-      env.DB.prepare("UPDATE tournaments SET status = 'final', finalized_at = ?, finalized_by = ? WHERE id = ?").bind(now(), name, tid),
+      env.DB.prepare("UPDATE tournaments SET status = 'final', finalized_at = ?, finalized_by = ? WHERE id = ? AND status = 'open'").bind(now(), name, tid),
     ]);
+    if ((await lastChange()) !== before) {
+      await env.DB.batch([
+        env.DB.prepare("DELETE FROM payments WHERE tournament_id = ?").bind(tid),
+        env.DB.prepare("UPDATE tournaments SET status = 'open', finalized_at = NULL, finalized_by = NULL WHERE id = ?").bind(tid),
+      ]);
+      throw new HttpError(409, "Someone changed the trip while you were finalizing. Check it and finalize again.");
+    }
     await log(env, tid, name, `finalized ${t.name}`);
     return json({ ok: true });
   }
@@ -421,11 +459,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       await log(env, tid, name, `added ${str(b.role, 40) || "Coach"} ${str(b.name)} to coaches & staff`);
       return json({ id: r.id }, 201);
     }
-    // A family that joins late shares existing costs automatically, by who was
-    // there (custom splits are hand-set, so they're left alone).
-    const { results: exps } = await env.DB.prepare("SELECT id, split FROM expenses WHERE tournament_id = ? AND basis <> 'custom'").bind(tid).all<any>();
-    if (exps.length) await env.DB.batch(exps.map(e => env.DB.prepare("UPDATE expenses SET split = ? WHERE id = ?")
-      .bind(JSON.stringify({ ...JSON.parse(e.split), [r.id]: null }), e.id)));
+    // A family that joins late shares existing costs automatically: a family not
+    // listed on an expense counts as "automatic" (see unitsFor in split.js).
     await log(env, tid, name, `added the ${str(b.name)} family`);
     return json({ id: r.id }, 201);
   }
@@ -544,13 +579,13 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         `UPDATE expenses SET description = ?, vendor = ?, date = ?, category = ?, basis = ?, amount_cents = ?, paid_by = ?, split = ?,
          receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ? WHERE id = ?`)
         .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id).run();
-      if (old.receipt_key && old.receipt_key !== e.receipt_key) await env.RECEIPTS.delete(old.receipt_key);
+      if (old.receipt_key !== e.receipt_key) await dropReceipt(env, old.receipt_key);
       await log(env, old.tournament_id, name, `edited ${e.description}`);
       return json({ ok: true });
     }
     if (method === "DELETE") {
       await env.DB.prepare("DELETE FROM expenses WHERE id = ?").bind(id).run();
-      if (old.receipt_key) await env.RECEIPTS.delete(old.receipt_key);
+      await dropReceipt(env, old.receipt_key);
       await log(env, old.tournament_id, name, `deleted ${old.description}, $${(old.amount_cents / 100).toFixed(2)}`);
       return json({ ok: true });
     }
@@ -562,13 +597,15 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     await openTournament(env, tid);
     const type = (req.headers.get("content-type") || "").split(";")[0];
     if (!["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(type)) throw new HttpError(415, "Upload a photo (JPEG or PNG) or a PDF");
-    const size = Number(req.headers.get("content-length") || 0);
+    const size = Number(req.headers.get("content-length"));
+    if (!size) throw new HttpError(411, "Upload needs a file size");
     if (size > MAX_RECEIPT_BYTES) throw new HttpError(413, "That file is over 10 MB");
     const key = `t${tid}/${crypto.randomUUID()}`;
     await env.RECEIPTS.put(key, req.body, { httpMetadata: { contentType: type } });
     return json({ key, type }, 201);
   }
-  if ((m = path.match(/^\/receipts\/(t\d+\/[0-9a-f-]+)$/)) && method === "GET") {
+  if ((m = path.match(/^\/receipts\/(t(\d+)\/[0-9a-f-]+)$/)) && method === "GET") {
+    await tournament(env, Number(m[2]));               // 404s for a deleted trip
     const obj = await env.RECEIPTS.get(m[1]);
     if (!obj) throw new HttpError(404, "Receipt not found");
     return new Response(obj.body, { headers: { "content-type": obj.httpMetadata?.contentType || "application/octet-stream", "cache-control": "private, max-age=31536000, immutable" } });

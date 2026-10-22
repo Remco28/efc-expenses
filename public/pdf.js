@@ -280,7 +280,7 @@ export async function exportPdf(trip) {
       draw({ x, y: yy, width: w, height: h });
     };
     let bytes;
-    try { bytes = await fetch(`/api/receipts/${e.receipt_key}`, { credentials: "same-origin" }).then(r => { if (!r.ok) throw new Error(); return r.arrayBuffer(); }); }
+    try { bytes = await fetch(`/api/receipts/${encodeURI(e.receipt_key)}`, { credentials: "same-origin" }).then(r => { if (!r.ok) throw new Error(); return r.arrayBuffer(); }); }
     catch { text("This receipt couldn't be loaded.", M, top - 16, { color: C.grey }); continue; }
     if (e.receipt_type === "application/pdf") {
       let src;
@@ -298,7 +298,10 @@ export async function exportPdf(trip) {
       }
       if (pages.length > 1) runningTitle = "";
     } else {
-      const img = e.receipt_type === "image/png" ? await doc.embedPng(bytes) : await doc.embedJpg(bytes);
+      // A photo pdf-lib can't read (e.g. WebP) gets a note instead of breaking the whole record.
+      let img;
+      try { img = e.receipt_type === "image/png" ? await doc.embedPng(bytes) : await doc.embedJpg(bytes); }
+      catch { text("This receipt image couldn't be included. It's still stored in the app.", M, top - 16, { color: C.grey }); continue; }
       frame(box => page.drawImage(img, box), img.width, img.height, top - BOTTOM - 8);
     }
   }

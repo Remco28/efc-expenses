@@ -35,7 +35,9 @@ export function tournamentDays(start, end) {
 // `date` only matters for per-person and per-family: who was there that day.
 export function autoUnits(basis, family, date) {
   if (family.kind === "staff") return 0;          // coaches and staff never share costs
-  const people = family.people || [];
+  // Only people on the trip at all (at least one day) count; with a day, only
+  // those there that day.
+  const people = (family.people || []).filter(p => p.days.length);
   const fencers = people.filter(p => p.is_fencer);
   const there = p => !date || p.days.includes(date);
   switch (basis) {
@@ -56,15 +58,18 @@ export function defaultSplit(basis, families) {
   return split;
 }
 
-// Units per included family: the hand-set number if there is one, else auto.
+// Units per family. A family not listed on the expense is on automatic, the
+// same as null, so families added later share by who was there. Custom splits
+// are all hand-set, so there an unlisted family counts 0.
 export function unitsFor(expense, families) {
-  const byId = new Map(families.map(f => [String(f.id), f]));
+  const split = expense.split || {};
   const units = {};
-  for (const [id, set] of Object.entries(expense.split || {})) {
-    const f = byId.get(String(id));
-    if (!f || f.kind === "staff") continue;
+  for (const f of families) {
+    if (f.kind === "staff") continue;
+    const id = String(f.id);
+    const set = id in split ? split[id] : expense.basis === "custom" ? 0 : null;
     const n = set == null ? autoUnits(expense.basis, f, expense.date) : Number(set);
-    if (n > 0) units[id] = n;
+    if (Number.isFinite(n) && n > 0) units[id] = Math.min(n, 1e6);   // the server caps hand-set counts lower; this keeps the math finite
   }
   return units;
 }
@@ -96,6 +101,9 @@ export function balances(expenses, families) {
   for (const e of expenses) {
     const s = shares(e, families);
     perExpense[e.id] = s;
+    // An expense nobody shares (everyone unticked or absent) can't be settled;
+    // leave it out until it's fixed, so the balances still net to zero.
+    if (!s.total) continue;
     if (rows[e.paid_by]) rows[e.paid_by].paid += e.amount_cents;
     for (const [id, c] of Object.entries(s.shares)) if (rows[id]) rows[id].owed += c;
   }

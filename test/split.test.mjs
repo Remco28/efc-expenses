@@ -80,7 +80,7 @@ test("a treasurer on the trip ends with exactly their own balance", () => {
 });
 
 test("an expense with everyone unticked splits to nobody", () => {
-  const e = { amount_cents: 1000, basis: "family", date: null, split: {} };
+  const e = { amount_cents: 1000, basis: "family", date: null, split: { 1: 0, 2: 0, 3: 0, 4: 0 } };
   assert.equal(shares(e, ten).total, 0);
 });
 
@@ -114,4 +114,35 @@ test("staff never share, but are paid back through the treasurer", () => {
   const plan = treasurerPlan(rows, 1);
   assert.ok(plan.some(x => x.family_id === 9 && x.direction === "out" && x.amount_cents === 90000));
   assert.equal(Object.values(rows).reduce((s, r) => s + r.net, 0), 0);
+});
+
+test("a family listed nowhere on an expense counts automatically", () => {
+  const e = { amount_cents: 6000, basis: "person", date: days[0], split: {} };
+  assert.deepEqual(shares(e, ten).shares, { 1: 4000, 4: 2000 });
+  const custom = { amount_cents: 6000, basis: "custom", date: null, split: { 1: 1 } };
+  assert.deepEqual(shares(custom, ten).shares, { 1: 6000 });
+});
+
+test("people with no days at all don't count, even on whole-trip costs", () => {
+  const fams = structuredClone(ten);
+  fams[3].people[0].days = []; fams[3].people[0].fencing_days = [];   // D's fencer not on the trip
+  const flight = { amount_cents: 30000, basis: "fencer", date: null, split: {} };
+  const meal = { amount_cents: 12000, basis: "person", date: null, split: {} };
+  const park = { amount_cents: 3000, basis: "family", date: null, split: {} };
+  assert.ok(!("4" in shares(flight, fams).shares));
+  assert.ok(!("4" in shares(meal, fams).shares));
+  assert.ok(!("4" in shares(park, fams).shares));
+});
+
+test("an expense nobody shares doesn't credit the payer, so balances still net to zero", () => {
+  const e = { id: 1, amount_cents: 4000, basis: "person", date: days[0], paid_by: 2, split: { 1: 0, 4: 0 } };
+  const { rows } = balances([e], ten);
+  assert.equal(rows[2].paid, 0);
+  assert.equal(Object.values(rows).reduce((s, r) => s + r.net, 0), 0);
+});
+
+test("absurd hand-set counts don't produce NaN", () => {
+  const e = { amount_cents: 100, basis: "custom", date: null, split: { 1: 1e308, 2: 1e308 } };
+  const s = shares(e, ten);
+  assert.ok(Object.values(s.shares).every(Number.isFinite));
 });

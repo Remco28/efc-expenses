@@ -165,7 +165,12 @@ function showTour(start = 0) {
 
 // ---------- routing ----------
 window.addEventListener("hashchange", route);
-document.addEventListener("visibilitychange", () => { if (!document.hidden && !S.draft && !document.querySelector(".sheet-back")) route(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || S.draft || document.querySelector(".sheet-back, .tour-back")) return;
+  // Family and staff screens save field by field; don't reload under someone's typing.
+  if (/^#\/t\/\d+\/f\//.test(location.hash) || document.activeElement?.matches?.("input, textarea, select")) return;
+  route();
+});
 
 let lastScreen = null;
 async function route() {
@@ -193,7 +198,8 @@ async function show() {
       if (parts[2] === "f") { S.draft = null; return renderFamily(Number(parts[3])); }
       if (parts[2] === "day") { S.draft = null; return renderDay(parts[3]); }
       S.draft = null;
-      return renderTrip(q.get("tab") || "expenses");
+      const tab = q.get("tab");
+      return renderTrip(["expenses", "families", "settle", "treasurer"].includes(tab) ? tab : "expenses");
     }
     S.draft = null;
     if (parts[0] === "deleted") return renderDeleted(await api("/tournaments/deleted"));
@@ -398,7 +404,7 @@ function youCard() {
 function focusKey() {
   const a = document.activeElement;
   if (!a || a === document.body) return null;
-  const sel = ["act", "id", "day", "kind", "basis", "fam", "inc", "units"].filter(k => a.dataset?.[k] != null).map(k => `[data-${k}="${a.dataset[k]}"]`).join("");
+  const sel = ["act", "id", "day", "kind", "basis", "fam", "inc", "units", "fence", "own", "famday", "pname", "fencer"].filter(k => a.dataset?.[k] != null).map(k => `[data-${k}="${a.dataset[k]}"]`).join("");
   return sel || (a.id ? "#" + a.id : null);
 }
 function restoreFocus(sel, fallback) {
@@ -676,6 +682,7 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
   if (st()) st().textContent = "Saving…";
   famPending++;
   famQueue = famQueue.then(() => act(call)).catch(() => {}).then(async () => {
+   try {
     if (--famPending) return;
     // If they've already left this screen (tapped Done or Back while a save was
     // still going), don't drag them back: the new screen loads fresh data itself.
@@ -686,6 +693,7 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
     if (!here()) return;
     renderFamily(fid, f);
     if (st()) { st().textContent = `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
+   } catch (e) { console.error(e); if (st()) st().textContent = ""; }     // a failed reload must not block later saves
   });
   return famQueue;
 }
@@ -720,9 +728,12 @@ function wireFamily(f) {
   const add = document.getElementById("addperson");
   if (add) add.onsubmit = async ev => {
     ev.preventDefault();
+    if (add.dataset.busy) return;                         // a double tap adds one person, not two
     const n = document.getElementById("newname").value.trim();
     if (!n) { document.getElementById("newname").focus(); return toast("Type a first name"); }
-    await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: document.getElementById("newfencer").checked } }), `${n} added`);
+    add.dataset.busy = "1"; add.querySelector("button").disabled = true;
+    const fencer = document.getElementById("newfencer").checked;
+    await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: fencer } }), `${n} added`);
     document.getElementById("newname")?.focus();
   };
 }
@@ -808,7 +819,7 @@ function renderEditor(id) {
   $("day").onchange = () => { d.date = $("day").value || null; resetSplit(); };
   $("cat").onchange = () => { d.category = $("cat").value; if (!d.basisTouched) { d.basis = CATEGORIES[d.category].basis; resetSplit(); } };
   $("paid").onclick = ev => { const b = ev.target.closest("[data-fam]"); if (!b) return; d.paid_by = Number(b.dataset.fam); markPaid(); drawSplit(); };
-  $("basis").onclick = ev => { const b = ev.target.closest("[data-basis]"); if (!b) return; d.basis = b.dataset.basis; d.basisTouched = true; resetSplit(); };
+  $("basis").onclick = ev => { const b = ev.target.closest("[data-basis]"); if (!b || b.dataset.basis === d.basis) return; d.basis = b.dataset.basis; d.basisTouched = true; d.splitTouched = true; resetSplit(); };
   $("ex").onsubmit = async ev => { ev.preventDefault(); pull(); await saveExpense(); };
   drawReceipt();
   drawSplit();
@@ -822,8 +833,8 @@ function renderExpenseView(e) {
     <div class="wrap"><div class="card">
       <div class="total"><span class="muted">${esc(e.date ? dayLong(e.date) : "Whole trip")}</span><span class="v">${money(e.amount_cents)}</span></div>
       <p class="muted" style="margin-top:6px">${esc(famName(e.paid_by))} paid · ${esc(CATEGORIES[e.category].label)}${e.vendor ? ` · ${esc(e.vendor)}` : ""}</p>
-      ${e.receipt_key ? `<div class="receipt" style="margin:12px 0">${e.receipt_type === "application/pdf" ? `<div class="pdf">PDF</div>` : `<img src="/api/receipts/${e.receipt_key}" alt="Receipt photo">`}
-        <a href="/api/receipts/${e.receipt_key}" target="_blank" rel="noopener">View receipt</a></div>` : `<p class="faint small">No receipt was added.</p>`}
+      ${e.receipt_key ? `<div class="receipt" style="margin:12px 0">${e.receipt_type === "application/pdf" ? `<div class="pdf">PDF</div>` : `<img src="/api/receipts/${esc(e.receipt_key)}" alt="Receipt photo">`}
+        <a href="/api/receipts/${esc(e.receipt_key)}" target="_blank" rel="noopener">View receipt</a></div>` : `<p class="faint small">No receipt was added.</p>`}
       <h2 style="margin-top:16px">How it was split</h2><p class="muted small">${BASES[e.basis].label}: ${esc(BASIS_HELP[e.basis])}</p>
       <table class="t">${Object.keys(s.shares).map(id => `<tr><td>${esc(famName(id))}<div class="faint small">${s.units[id]} of ${plural(s.total, BASES[e.basis].unit, BASES[e.basis].units)}</div></td><td class="n">${money(s.shares[id])}</td></tr>`).join("")}
         <tr><td><b>Total</b></td><td class="n"><b>${money(e.amount_cents)}</b></td></tr></table>
@@ -872,6 +883,7 @@ function drawSplit() {
     : `<b>Enter the amount</b>then pick who paid`;
   el.onchange = ev => {
     const c = ev.target.closest("[data-inc]");
+    if (c) d.splitTouched = true;
     if (!c) return;
     const f = families.find(x => x.id === Number(c.dataset.inc));
     // Ticking a family nobody marked as there would count 0 and look broken, so
@@ -882,6 +894,7 @@ function drawSplit() {
   };
   el.oninput = ev => {
     const u = ev.target.closest("[data-units]"); if (!u) return;
+    d.splitTouched = true;
     d.split[u.dataset.units] = u.value === "" ? null : Math.max(0, Number(u.value));
     const pos = u.selectionStart; drawSplit();
     const again = el.querySelector(`[data-units="${u.dataset.units}"]`); again.focus(); try { again.setSelectionRange(pos, pos); } catch {}
@@ -892,9 +905,9 @@ function drawReceipt(state = "") {
   const d = S.draft, el = document.getElementById("rcpt"); if (!el) return;
   const t = S.trip.tournament;
   if (d.receipt_key) {
-    const thumb = d.receipt_type === "application/pdf" ? `<div class="pdf">PDF</div>` : `<img src="/api/receipts/${d.receipt_key}" alt="Receipt photo">`;
+    const thumb = d.receipt_type === "application/pdf" ? `<div class="pdf">PDF</div>` : `<img src="/api/receipts/${esc(d.receipt_key)}" alt="Receipt photo">`;
     el.innerHTML = `<div class="receipt">${thumb}<div style="flex:1">
-        <a href="/api/receipts/${d.receipt_key}" target="_blank" rel="noopener">View receipt</a><br>
+        <a href="/api/receipts/${esc(d.receipt_key)}" target="_blank" rel="noopener">View receipt</a><br>
         ${state === "reading" ? `<span class="muted small"><span class="spinner"></span> Reading the receipt…</span>` : `<button type="button" class="link danger small" data-act="drop-receipt">Remove</button>`}
       </div></div>${d.aiNote ? `<div class="callout" style="margin-top:12px">${esc(d.aiNote)}</div>` : ""}`;
     return;
@@ -925,31 +938,37 @@ async function shrink(file) {
 
 async function uploadReceipt(file, tid) {
   const d = S.draft;
+  const stillHere = () => S.draft === d && document.getElementById("rcpt");   // they may have left the form
+  d.uploading = true;
   drawReceipt("uploading");
   try {
     if (file.size > 10 * 1024 * 1024 && file.type === "application/pdf") throw new Error("That PDF is over 10 MB");
     const blob = await shrink(file);
     const r = await api(`/tournaments/${tid}/receipts`, { method: "POST", body: blob, headers: { "content-type": blob.type } });
     d.receipt_key = r.key; d.receipt_type = r.type; d.aiNote = "";
+    d.uploading = false;
+    if (!stillHere()) return;
     drawReceipt("reading");
-    try { fillFromReceipt(await api(`/tournaments/${tid}/read-receipt`, { method: "POST", body: { key: r.key } })); }
+    try { const f = await api(`/tournaments/${tid}/read-receipt`, { method: "POST", body: { key: r.key } }); if (stillHere()) fillFromReceipt(f, d); }
     catch (e) { if (e instanceof AuthError) throw e; d.aiNote = e.message; }
   } catch (e) {
+    d.uploading = false;
     if (e instanceof AuthError) return renderLogin();
-    toast(e.message);
+    if (stillHere()) toast(e.message);
   }
-  drawReceipt();
+  if (stillHere()) drawReceipt();
 }
 
-function fillFromReceipt(f) {
-  const d = S.draft, $ = s => document.getElementById(s);
+function fillFromReceipt(f, d = S.draft) {
+  const $ = s => document.getElementById(s);
   const days = tournamentDays(S.trip.tournament.start_date, S.trip.tournament.end_date);
   if (f.total != null && !cents(d.amount)) { d.amount = f.total.toFixed(2); $("amt").value = d.amount; }
   if (f.description && !d.description) { d.description = f.description; $("desc").value = d.description; }
   if (f.vendor && !d.vendor) { d.vendor = f.vendor; $("vend").value = d.vendor; }
   if (f.category && CATEGORIES[f.category]) { d.category = f.category; $("cat").value = f.category; if (!d.basisTouched) d.basis = CATEGORIES[f.category].basis; }
   if (f.date && days.includes(f.date)) { d.date = f.date; $("day").value = f.date; }
-  d.split = defaultSplit(d.basis, S.trip.families);
+  // Keep any sharing changes they made while the receipt was being read.
+  if (!d.splitTouched) d.split = defaultSplit(d.basis, S.trip.families);
   const out = f.date && !days.includes(f.date) ? ` The receipt is dated ${f.date}, which is outside the trip.` : "";
   d.aiNote = `We filled in the form from the receipt. Check the amount and who's included before saving.${out}${f.notes ? " Note: " + f.notes : ""}`;
   drawSplit();
@@ -957,6 +976,7 @@ function fillFromReceipt(f) {
 
 async function saveExpense() {
   const d = S.draft, t = S.trip.tournament;
+  if (d.uploading) return toast("The receipt is still uploading. Save again in a moment.");
   const amount_cents = cents(d.amount);
   if (amount_cents <= 0) { document.getElementById("amt").focus(); return toast("Enter the amount"); }
   if (!d.paid_by) { document.getElementById("paid").scrollIntoView({ block: "center" }); return toast("Pick the family that paid"); }
@@ -1090,15 +1110,20 @@ function tabTreasurer(el) {
       <div class="amt">${money(x.amount_cents)}</div></div>`;
   };
   const mine = t.treasurer_family_id ? balances(S.trip.expenses, families).rows[t.treasurer_family_id]?.net || 0 : 0;
+  // If the treasurer's own family owes, they put that in themselves; count it as
+  // collected so a fully settled trip doesn't look short.
+  const own = mine < 0 ? -mine : 0;
+  const hand = sum(ins, true) + own - sum(outs, true);
   el.innerHTML = `
     <div class="card"><div class="head" style="margin-bottom:4px"><div><div class="eyebrow">Treasurer</div><h2 style="margin-top:4px">${esc(tname(t))}</h2></div>
         <button class="btn-ghost btn-small" data-act="volunteer">${icon("edit")} Edit</button></div>
       <div class="paynote"><b>Families send money to:</b> ${t.treasurer_notes ? esc(t.treasurer_notes) : `<span class="owe">not added yet. Tap Edit and add your Venmo or Zelle.</span>`}</div></div>
     ${final() ? `<div class="card ledger"><h2>Progress</h2>
       <table class="t"><tr><td>Collected</td><td class="n"><b>${money(sum(ins, true))}</b> of ${money(sum(ins))}</td></tr>
+        ${own ? `<tr><td>Your own family's part</td><td class="n"><b>${money(own)}</b></td></tr>` : ""}
         <tr><td>Paid out</td><td class="n"><b>${money(sum(outs, true))}</b> of ${money(sum(outs))}</td></tr>
-        <tr><td>${sum(ins, true) >= sum(outs, true) ? "In hand right now" : "Paid out ahead of collecting"}</td><td class="n"><b>${money(Math.abs(sum(ins, true) - sum(outs, true)))}</b></td></tr></table>
-      ${sum(ins, true) < sum(outs, true) ? `<p class="hint">You've sent out more than you've collected so far. That's fine if you fronted it; it evens out as the remaining families pay.</p>` : ""}
+        <tr><td>${hand >= 0 ? "In hand right now" : "Paid out ahead of collecting"}</td><td class="n"><b>${money(Math.abs(hand))}</b></td></tr></table>
+      ${hand < 0 ? `<p class="hint">You've sent out more than you've collected so far. That's fine if you fronted it; it evens out as the remaining families pay.</p>` : ""}
       <p class="hint">${t.treasurer_family_id ? `The treasurer's own family (${esc(famName(t.treasurer_family_id))}) ${mine >= 0 ? `keeps ${money(mine)}: that much of what's collected stays with the treasurer at the end` : `adds ${money(-mine)}: the treasurer puts that much in themselves`}. After that, nothing is left over.` : "Everything collected gets paid out, so nothing is left over at the end."}</p></div>`
       : `<div class="callout">Nothing to collect yet. Once the trip is finalized, this becomes your checklist: tick each family as their payment arrives and as you pay people back.</div>`}
     <div class="card ledger"><h2>${final() ? "Collect from" : "You'll collect from"}</h2>${final() ? `<p class="muted small" style="margin-top:-4px">Tick each one when the money arrives.</p>` : ""}${ins.map(row).join("") || `<p class="faint">Nobody owes anything.</p>`}</div>
