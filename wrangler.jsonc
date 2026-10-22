@@ -35,5 +35,8 @@
 	],
 	"observability": {
 		"enabled": true
+	},
+	"vars": {
+		"RECEIPT_MODEL": "claude-haiku-5-5"
 	}
 }

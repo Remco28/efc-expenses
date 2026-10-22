@@ -56,4 +56,16 @@ npm run deploy
 
 `wrangler.jsonc` routes the Worker to `efcexpenses.teamremco.org`. That domain's DNS zone is on Cloudflare, so the deploy step creates the custom domain itself.
 
+## Changing the Claude model
+
+The model that reads receipts is set in one place, `wrangler.jsonc`:
+
+```jsonc
+"vars": { "RECEIPT_MODEL": "claude-haiku-5-5" }
+```
+
+A model name like `claude-haiku-5-5` always means that exact model. It doesn't silently upgrade, so the app keeps behaving the same until you change it. To switch, edit that line, run `npm run deploy`, and test by uploading a receipt. Make the change in `wrangler.jsonc`, not the Cloudflare dashboard, because the next deploy overwrites dashboard values.
+
+Anthropic retires old models with advance notice, sent by email to the API account and posted at https://platform.claude.com/docs/en/about-claude/model-deprecations. If a model is retired before you switch, receipt reading stops and the app asks people to enter expenses by hand. Nothing else breaks.
+
 To change the access code, run `wrangler secret put ACCESS_CODE` again. Everyone who signed in with the old code is signed out.

@@ -10,10 +10,12 @@ interface Env {
   ASSETS: Fetcher;
   ACCESS_CODE: string;
   ANTHROPIC_API_KEY: string;
+  RECEIPT_MODEL?: string;
 }
 
-// The cheapest current Claude model; reading a receipt doesn't need more.
-const RECEIPT_MODEL = "claude-haiku-5-5";
+// Which Claude model reads receipts is set in wrangler.jsonc (vars.RECEIPT_MODEL);
+// this is only the fallback if that setting is missing.
+const DEFAULT_RECEIPT_MODEL = "claude-haiku-5-5";
 const MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
 const COOKIE = "efc_access";
 
@@ -140,7 +142,7 @@ async function readReceipt(env: Env, key: string, t: any) {
   const categories = Object.entries(CATEGORIES).map(([k, c]: [string, any]) => `${k}: ${c.label}`).join("\n");
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
   const res = await client.messages.parse({
-    model: RECEIPT_MODEL,
+    model: env.RECEIPT_MODEL || DEFAULT_RECEIPT_MODEL,
     max_tokens: 2000,
     output_config: { effort: "low", format: zodOutputFormat(ReceiptFields) },
     messages: [{
@@ -421,7 +423,7 @@ export default {
     } catch (err) {
       if (err instanceof HttpError) return json({ error: err.message }, err.status);
       if (err instanceof Anthropic.APIError) {
-        console.error("Claude API error", err.status, err.message);
+        console.error("Claude API error", env.RECEIPT_MODEL || DEFAULT_RECEIPT_MODEL, err.status, err.message);
         return json({ error: "Couldn't read that receipt right now. Enter it by hand." }, 502);
       }
       console.error(err);
