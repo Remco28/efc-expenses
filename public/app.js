@@ -188,7 +188,7 @@ function renderName() {
 // ---------- home ----------
 function tripStatus(t) {
   if (t.status === "final") return t.pay_total && t.pay_done < t.pay_total
-    ? `<span class="chip gold">Settling · ${t.pay_done} of ${t.pay_total} paid</span>` : `<span class="chip ok">${icon("check")} Settled</span>`;
+    ? `<span class="chip gold">Final · ${t.pay_done} of ${t.pay_total} paid</span>` : `<span class="chip ok">${icon("check")} Final · all paid</span>`;
   if (!t.family_count) return `<span class="chip">Setting up</span>`;
   if (!t.treasurer_name && t.expense_count) return `<span class="chip warn">Needs a treasurer</span>`;
   return `<span class="chip navy">Open</span>`;
@@ -283,7 +283,7 @@ function youCard() {
     const done = x.paid_at ? `<span class="chip ok">${icon("check")} Done</span>` : `<span class="chip">Waiting</span>`;
     if (x.direction === "in") return `<div class="card you">${head}
       <div class="head" style="margin:0"><div><div class="muted small">Pay ${esc(t.treasurer_name)}</div><div class="big">${money(x.amount_cents)}</div></div>${done}</div>
-      <div class="sendto"><b>Send to:</b> ${t.treasurer_notes ? esc(t.treasurer_notes) : `<span class="faint">${esc(t.treasurer_name)} hasn't added payment details yet.</span>`}</div>
+      <div class="sendto"><b>Send to</b><div class="handle">${t.treasurer_notes ? esc(t.treasurer_notes) : `<span class="faint">${esc(t.treasurer_name)} hasn't added payment details yet.</span>`}</div></div>
       ${x.paid_at ? "" : `<p class="hint">${esc(t.treasurer_name)} ticks it off when your payment arrives.</p>`}
       <a class="link small tap" href="#/t/${t.id}?tab=settle&open=${me.id}">How was this worked out?</a></div>`;
     return `<div class="card you">${head}
@@ -494,8 +494,8 @@ const BASIS_HELP = {
 
 function renderEditor(id) {
   const { tournament: t, families, expenses } = S.trip;
-  if (final()) { location.hash = `#/t/${t.id}`; return; }
   const e = id ? expenses.find(x => x.id === id) : null;
+  if (final()) { if (e) return renderExpenseView(e); location.hash = `#/t/${t.id}`; return; }
   if (id && !e) { location.hash = `#/t/${t.id}`; return; }
   if (!S.draft || S.draft.id !== (id || 0)) {
     const me = myFamily();
@@ -516,6 +516,7 @@ function renderEditor(id) {
           ${Object.entries(CATEGORIES).map(([k, c]) => `<option value="${k}" ${d.category === k ? "selected" : ""}>${esc(c.label)}</option>`).join("")}</select>
         <label class="f" for="day">Day</label><select id="day"><option value="">Whole trip, or more than one day</option>
           ${days.map(x => `<option value="${x}" ${d.date === x ? "selected" : ""}>${esc(dayLong(x))}</option>`).join("")}</select>
+        <p class="hint" id="daynote"></p>
         <label class="f" for="vend">Store or restaurant <span class="opt">(optional)</span></label><input id="vend" value="${esc(d.vendor)}">
       </div>
       <div class="section"><h2><span class="n">3</span>Who paid?</h2>
@@ -543,6 +544,23 @@ function renderEditor(id) {
   drawSplit();
 }
 
+// A finalized trip is locked, but anyone can still see how an expense was split.
+function renderExpenseView(e) {
+  const { tournament: t, families } = S.trip;
+  const s = shares(e, families);
+  app.innerHTML = `${bar({ back: `#/t/${t.id}`, title: e.description, sub: t.name })}
+    <div class="wrap"><div class="card">
+      <div class="total"><span class="muted">${esc(e.date ? dayLong(e.date) : "Whole trip")}</span><span class="v">${money(e.amount_cents)}</span></div>
+      <p class="muted" style="margin-top:6px">${esc(famName(e.paid_by))} paid · ${esc(CATEGORIES[e.category].label)}${e.vendor ? ` · ${esc(e.vendor)}` : ""}</p>
+      ${e.receipt_key ? `<div class="receipt" style="margin:12px 0">${e.receipt_type === "application/pdf" ? `<div class="pdf">PDF</div>` : `<img src="/api/receipts/${e.receipt_key}" alt="Receipt photo">`}
+        <a href="/api/receipts/${e.receipt_key}" target="_blank" rel="noopener">View receipt</a></div>` : `<p class="faint small">No receipt was added.</p>`}
+      <h2 style="margin-top:16px">How it was split</h2><p class="muted small">${BASES[e.basis].label}: ${esc(BASIS_HELP[e.basis])}</p>
+      <table class="t">${Object.keys(s.shares).map(id => `<tr><td>${esc(famName(id))}<div class="faint small">${s.units[id]} of ${plural(s.total, BASES[e.basis].unit, BASES[e.basis].units)}</div></td><td class="n">${money(s.shares[id])}</td></tr>`).join("")}
+        <tr><td><b>Total</b></td><td class="n"><b>${money(e.amount_cents)}</b></td></tr></table>
+      <p class="hint">Added by ${esc(e.created_by)}${e.updated_by ? ` · last changed by ${esc(e.updated_by)}` : ""}. This trip is final; reopen it from Settle up to change anything.</p>
+    </div></div>`;
+}
+
 function markPaid() {
   document.querySelectorAll("#paid [data-fam]").forEach(b => { const on = Number(b.dataset.fam) === Number(S.draft.paid_by); b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
 }
@@ -565,8 +583,12 @@ function drawSplit() {
     return `<div class="r ${inc && n ? "" : "off"}"><input type="checkbox" data-inc="${f.id}" ${inc ? "checked" : ""} aria-label="Include the ${esc(f.name)} family">
       <span class="nm">${esc(f.name)}</span>
       <input type="number" min="0" step="1" inputmode="numeric" data-units="${f.id}" value="${set ?? ""}" placeholder="${d.basis === "custom" ? "0" : auto}" ${inc ? "" : "disabled"} aria-label="${esc(BASES[d.basis].units)} for ${esc(f.name)}">
-      <span class="amt">${!inc ? `<span class="faint small">Not sharing</span>` : n && amount ? money(s.shares[f.id]) : "—"}</span></div>`;
+      <span class="amt">${!inc ? `<span class="faint small">${!auto && d.date && (d.basis === "person" || d.basis === "family") ? "Not there that day" : "Not sharing"}</span>` : n && amount ? money(s.shares[f.id]) : "—"}</span></div>`;
   }).join("")}<div class="tot"><span>${unit(s.total)}</span><span>${s.total && amount ? `${money(Math.round(amount / s.total))} each` : ""}</span></div></div>`;
+  const dayNote = document.getElementById("daynote");
+  if (dayNote) dayNote.textContent = d.basis === "fencer" || d.basis === "fencer_day"
+    ? "For this split the day is only for the record: the cost is shared across every fencing day of the trip."
+    : d.basis === "person" || d.basis === "family" ? "Only families there on this day share the cost. Pick \"Whole trip\" if it covered more than one day." : "";
   document.getElementById("splithint").textContent = d.basis === "custom" ? "Untick any family that isn't sharing this cost."
     : `The numbers are filled in from who's on the trip (${BASES[d.basis].units}). Type a different number to change one, or untick a family that isn't sharing this cost.`;
   document.getElementById("sum").innerHTML = amount
@@ -749,13 +771,13 @@ function tabSettle(el) {
     <div class="card"><h2>${final() ? "Who pays what" : "Who will pay what"}</h2>
       ${final() ? "" : `<p class="muted small" style="margin-top:-4px">This updates as expenses are added. It's fixed when the trip is finalized.</p>`}${todo || `<p class="faint">Add families first.</p>`}</div>
     <div class="card"><h2>Balances</h2>
-      <table class="t"><tr><th>Family</th><th class="n">Share</th><th class="n">Paid</th><th class="n">Balance</th></tr>
+      <div class="table-scroll"><table class="t bal"><tr><th>Family</th><th class="n">Share</th><th class="n">Paid</th><th class="n">Balance</th></tr>
       ${families.map(f => { const r = rows[f.id]; return `<tr><td>${esc(f.name)}</td><td class="n">${money(r.owed)}</td><td class="n">${money(r.paid)}</td>
         <td class="n ${r.net > 0 ? "get" : r.net < 0 ? "owe" : ""}"><b>${r.net > 0 ? "+" : ""}${money(r.net)}</b></td></tr>`; }).join("")}
-        <tr><td><b>Total</b></td><td class="n"><b>${money(total)}</b></td><td class="n"><b>${money(total)}</b></td><td></td></tr></table>
+        <tr><td><b>Total</b></td><td class="n"><b>${money(total)}</b></td><td class="n"><b>${money(total)}</b></td><td></td></tr></table></div>
       <p class="hint">Share is the family's part of every expense. Paid is what they put on their own card. A plus means they're owed money, a minus means they owe.</p></div>
     <div class="card"><h2>Each family's breakdown</h2><p class="muted small" style="margin-top:-4px">Tap a family to see every expense they share and how much of it is theirs.</p>${families.map(statement).join("")}</div>
-    ${final() ? `<div class="card"><h2>Finished</h2><p class="muted small">The trip is locked. Copy the payment list into the team chat, or download the record with every receipt.</p>
+    ${final() ? `<div class="card"><h2>Trip finalized</h2><p class="muted small">The trip is locked. Copy the payment list into the team chat, or download the record with every receipt.</p>
         <div class="row-actions"><button class="btn-primary" data-act="copy-final">${icon("copy")} Copy payment list</button>
         <button class="btn-ghost" data-act="export">${icon("download")} Download PDF record</button></div>
         <div class="row-actions"><button class="link" data-act="reopen">Reopen the trip to make changes</button></div></div>`
@@ -800,7 +822,7 @@ function tabTreasurer(el) {
         <tr><td>Paid out</td><td class="n"><b>${money(sum(outs, true))}</b> of ${money(sum(outs))}</td></tr>
         <tr><td>${sum(ins, true) >= sum(outs, true) ? "In hand right now" : "Paid out ahead of collecting"}</td><td class="n"><b>${money(Math.abs(sum(ins, true) - sum(outs, true)))}</b></td></tr></table>
       ${sum(ins, true) < sum(outs, true) ? `<p class="hint">You've sent out more than you've collected so far. That's fine if you fronted it; it evens out as the remaining families pay.</p>` : ""}
-      <p class="hint">${t.treasurer_family_id ? `The treasurer's own family (${esc(famName(t.treasurer_family_id))}) ${mine >= 0 ? `is owed ${money(mine)}, so the treasurer keeps that much of what's left at the end` : `owes ${money(-mine)}, so the treasurer adds that much themselves`}. After that, nothing is left over.` : "Everything collected gets paid out, so nothing is left over at the end."}</p></div>`
+      <p class="hint">${t.treasurer_family_id ? `The treasurer's own family (${esc(famName(t.treasurer_family_id))}) ${mine >= 0 ? `keeps ${money(mine)}: that much of what's collected stays with the treasurer at the end` : `adds ${money(-mine)}: the treasurer puts that much in themselves`}. After that, nothing is left over.` : "Everything collected gets paid out, so nothing is left over at the end."}</p></div>`
       : `<div class="callout">Nothing to collect yet. Once the trip is finalized, this becomes your checklist: tick each family as their payment arrives and as you pay people back.</div>`}
     <div class="card"><h2>${final() ? "Collect from" : "You'll collect from"}</h2>${final() ? `<p class="muted small" style="margin-top:-4px">Tick each one when the money arrives.</p>` : ""}${ins.map(row).join("") || `<p class="faint">Nobody owes anything.</p>`}</div>
     <div class="card"><h2>${final() ? "Pay back" : "You'll pay back"}</h2>${final() ? `<p class="muted small" style="margin-top:-4px">Tick each one once you've sent it.</p>` : ""}${outs.map(row).join("") || `<p class="faint">Nobody is owed anything.</p>`}</div>

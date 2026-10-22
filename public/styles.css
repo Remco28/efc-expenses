@@ -294,3 +294,30 @@ table.grid tr.fam td { text-align: left; font-size: 11px; font-weight: 750; lett
 @media (max-width: 480px) { .row-actions > * { flex-basis: 100%; } }
 .cell { width: 44px; height: 44px; }
 details > summary .small { font-weight: 500; }
+
+/* ---------- round 3 review fixes: small screens and large text ---------- */
+.you .sendto .handle { font-weight: 650; font-size: 15px; margin-top: 2px; overflow-wrap: anywhere; word-break: normal; }
+.card .head { flex-wrap: wrap; }
+.table-scroll { overflow-x: auto; }
+#toast { bottom: calc(84px + env(safe-area-inset-bottom)); }
+@media (max-width: 380px) {
+  .tabs { grid-template-columns: repeat(2, 1fr); }
+  .tabs a { padding: 8px 2px; }
+  .steps li { font-size: 0; }
+  .steps li.now { font-size: 11px; grid-column: auto; }
+  .steps li .b { margin-bottom: 4px; }
+  .bar .title .t { font-size: 16px; }
+  .wrap { padding-left: 12px; padding-right: 12px; }
+  .card { padding: 14px 12px; }
+  table.t th, table.t td { padding: 7px 4px; }
+}
+@media (max-width: 340px) { table.t.bal th:nth-child(2), table.t.bal td:nth-child(2) { display: none; } }
+h1[tabindex="-1"]:focus { outline: none; box-shadow: none; }
+@media (max-width: 380px) {
+  .xrow .what { white-space: normal; }
+  .xrow .ic { display: none; }
+  .next { flex-wrap: wrap; }
+  .next .btn { width: 100%; }
+  .who-btn { max-width: 30vw; }
+  .bar .title .s { display: none; }
+}

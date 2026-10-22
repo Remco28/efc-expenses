@@ -41,3 +41,20 @@ Believed, and wrong: "the readers will mostly find layout things; the wording is
 
 ## Standing rule for the cast (Frank, 2026-10-22)
 Most readers in every round must be representative of real users: fencing parents and grandparents across the whole range of tech experience. Specialists and auditors are extra, never the majority. Personas not yet used: a new fencing parent who doesn't know the sport's terms; a tech-savvy, skeptical parent who checks the numbers; a rushed parent at the venue, using one hand; a parent with an older phone and large text.
+
+## Round 2: 2026-10-22, commit 601c2fe
+Cast: 5 readers, all claude-haiku-5-5. A fix auditor; Gail (anxious grandmother, adds the pizza with its receipt); Tunde (impatient dad, what do I owe and why); Paola (B2 English, first-time treasurer, whole settle-up); the accessibility recheck.
+Outcome: every task passed. The fix auditor found all 13 checked fixes GONE, with one leftover (the breakdown said "is owed" for the treasurer's family, while the line above said "keeps").
+
+Tier 1 (fixed in this commit):
+1. The progress step was labelled "Settled" while payments were still outstanding (Paola; checkable). Now "Payments".
+2. Picking a family by accident went unnoticed (round 1 Mark, round 2 Paola: two readers). Now a confirmation toast names the family and how to switch.
+3. Focus went to the page top on every new screen (accessibility; checkable). It now lands on the new screen's h1.
+4. The breakdown used "is owed" for the treasurer's family (fix auditor; checkable). Now "keeps" or "adds".
+5. Paying out before collecting gave a negative "In hand" with no explanation (Paola; reproduced). Now a confirmation, and the line reads "Paid out ahead of collecting".
+6. "Per person" didn't say the head counts are filled in, so Gail switched to per family out of worry (Gail; checkable against the help text). The help text now says so.
+
+Tier 3, not acted on: on Settle up the treasurer's card comes before your own answer (Tunde; the your-family card above the tabs answers it); the receipt photo isn't compared with the entered amount (Gail; with auto-reading on, the AI fills the amount); radio groups tab through every option (accessibility, known); a doubled name on grid cells (accessibility; probably how the snapshot computes names).
+
+Predictions scored (PREDICTIONS-R2.md): fixes 2, 3, 4, 5, 7 and 9 landed as predicted. Round tier-1 count predicted 0 to 3, actual 6. "Landed and broke something adjacent" happened once, as predicted (the breakdown wording, from fix 2). The fix auditor finding a fix applied in one place and missed in another: yes, the same item.
+Believed, and wrong: "a step bar whose last step is called Settled reads as a goal." One reader took the highlighted step as the current status.

@@ -1,5 +1,6 @@
 // Builds the record PDF in the browser (the free Cloudflare plan allows too
-// little server CPU for this): summary page(s) first, then every receipt.
+// little server CPU for this): a summary page, each family's statement, then
+// every receipt on its own page.
 import { BASES, CATEGORIES, balances, money } from "./split.js";
 
 async function lib() {
@@ -14,125 +15,261 @@ async function lib() {
 
 // The built-in PDF fonts only cover Western European characters.
 const clean = s => String(s ?? "").replace(/→/g, "->").replace(/[−–—]/g, "-").replace(/[^\x20-\x7E\xA0-\xFF‘’“”•…]/g, "?");
-const day = iso => iso ? new Date(iso + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }) : "Whole trip";
+const utc = iso => new Date(iso + "T12:00:00Z");
+const day = iso => iso ? utc(iso).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" }) : "Whole trip";
+const fullDate = d => d.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+const range = t => {
+  const o = { month: "long", day: "numeric", timeZone: "UTC" };
+  return t.start_date === t.end_date ? utc(t.start_date).toLocaleDateString("en-US", { ...o, year: "numeric" })
+    : `${utc(t.start_date).toLocaleDateString("en-US", o)} - ${utc(t.end_date).toLocaleDateString("en-US", { ...o, year: "numeric" })}`;
+};
+const units = (n, basis) => `${n} ${n === 1 ? BASES[basis].unit : BASES[basis].units}`;
 
 export async function exportPdf(trip) {
   const { PDFDocument, StandardFonts, rgb } = await lib();
   const { tournament: t, families, expenses, payments } = trip;
-  const { rows } = balances(expenses, families);
+  const { rows, perExpense } = balances(expenses, families);
   const fam = id => families.find(f => f.id === Number(id))?.name || "?";
+  const isFinal = t.status === "final";
+
   const doc = await PDFDocument.create();
-  doc.setTitle(`EFC trip expenses - ${t.name}`);
+  doc.setTitle(clean(`${t.name} - EFC trip expenses`));
+  doc.setAuthor("EFC Trip Expenses");
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-  const ink = rgb(0.1, 0.12, 0.14), grey = rgb(0.42, 0.46, 0.5), line = rgb(0.85, 0.87, 0.9);
-  const W = 612, H = 792, M = 40;
 
-  // Receipts are numbered R1, R2… in expense order; the summary points at them.
+  const C = {
+    navy: rgb(0.078, 0.165, 0.298), navy2: rgb(0.122, 0.239, 0.42), gold: rgb(0.941, 0.706, 0.161), goldWash: rgb(0.992, 0.957, 0.863),
+    ink: rgb(0.086, 0.125, 0.18), ink2: rgb(0.29, 0.34, 0.41), grey: rgb(0.45, 0.49, 0.55), line: rgb(0.86, 0.88, 0.91),
+    zebra: rgb(0.965, 0.972, 0.982), white: rgb(1, 1, 1), soft: rgb(0.85, 0.89, 0.95), get: rgb(0.11, 0.48, 0.27), owe: rgb(0.7, 0.21, 0.12),
+  };
+  const W = 612, H = 792, M = 48, CW = W - 2 * M, BOTTOM = M + 22;
+  const total = expenses.reduce((s, e) => s + e.amount_cents, 0);
   const withReceipt = expenses.filter(e => e.receipt_key);
   const rnum = new Map(withReceipt.map((e, i) => [e.id, "R" + (i + 1)]));
 
-  let page, y;
-  const newPage = () => { page = doc.addPage([W, H]); y = H - M; };
+  let page, y, runningTitle = "";
+  const tw = (s, f, size) => f.widthOfTextAtSize(clean(s), size);
   const fit = (s, f, size, w) => {
     s = clean(s);
     if (f.widthOfTextAtSize(s, size) <= w) return s;
-    while (s && f.widthOfTextAtSize(s + "…", size) > w) s = s.slice(0, -1);
-    return s + "…";
+    while (s && f.widthOfTextAtSize(s + "...", size) > w) s = s.slice(0, -1);
+    return s.trimEnd() + "...";
   };
-  const text = (s, x, yy, { f = font, size = 9.5, color = ink, w, align = "left" } = {}) => {
+  const text = (s, x, yy, { f = font, size = 9.5, color = C.ink, w, align = "left" } = {}) => {
     const str = w ? fit(s, f, size, w) : clean(s);
-    const dx = align === "right" ? (w ?? 0) - f.widthOfTextAtSize(str, size) : 0;
+    const dx = align === "right" ? (w ?? 0) - f.widthOfTextAtSize(str, size) : align === "center" ? ((w ?? 0) - f.widthOfTextAtSize(str, size)) / 2 : 0;
     page.drawText(str, { x: x + dx, y: yy, size, font: f, color });
   };
-  const need = h => { if (y - h < M) newPage(); };
-  const heading = s => { need(48); y -= 26; text(s, M, y, { f: bold, size: 12 }); y -= 4; };
-  // cols: [label, width, align]
-  const table = (cols, data, totals) => {
-    const draw = (cells, f, color) => {
-      let x = M;
-      cells.forEach((c, i) => { text(c, x, y, { f, color, w: cols[i][1] - 6, align: cols[i][2] || "left", size: f === bold && color === grey ? 7.5 : 9.5 }); x += cols[i][1]; });
-    };
-    const header = () => { y -= 14; draw(cols.map(c => c[0].toUpperCase()), bold, grey); y -= 5; page.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 0.6, color: line }); };
-    need(40); header();
-    for (const r of data) {
-      if (y - 16 < M) { newPage(); header(); }
-      y -= 13; draw(r, font, ink);
-      y -= 4; page.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 0.4, color: line });
+  const wrap = (s, f, size, w) => {
+    const out = []; let line = "";
+    for (const word of clean(s).split(/\s+/)) {
+      const next = line ? line + " " + word : word;
+      if (f.widthOfTextAtSize(next, size) > w && line) { out.push(line); line = word; } else line = next;
     }
-    if (totals) { need(16); y -= 13; draw(totals, bold, ink); y -= 4; }
+    if (line) out.push(line);
+    return out;
+  };
+  const rect = (x, yy, w, h, color, border) => page.drawRectangle({ x, y: yy, width: w, height: h, color, ...(border ? { borderColor: border, borderWidth: 0.6 } : {}) });
+  const hline = (yy, color = C.line, thickness = 0.6) => page.drawLine({ start: { x: M, y: yy }, end: { x: W - M, y: yy }, thickness, color });
+
+  // Pages after the first get a slim header carrying the trip and section.
+  const newPage = title => {
+    if (title != null) runningTitle = title;
+    page = doc.addPage([W, H]);
+    rect(0, H - 34, W, 34, C.navy); rect(0, H - 36, W, 2, C.gold);
+    text("EFC TRIP EXPENSES", M, H - 22, { f: bold, size: 7.5, color: C.gold });
+    text(`${t.name}${runningTitle ? "   |   " + runningTitle : ""}`, M + 96, H - 22, { size: 8.5, color: C.white, w: CW - 96 });
+    y = H - 62;
+  };
+  const need = h => { if (y - h < BOTTOM) newPage(); };
+  const section = (title, note) => {
+    need(64);
+    text(title, M, y, { f: bold, size: 13, color: C.navy });
+    rect(M, y - 7, 24, 2, C.gold);
+    y -= 22;
+    if (note) { for (const l of wrap(note, font, 8.5, CW)) { text(l, M, y, { size: 8.5, color: C.grey }); y -= 11.5; } y -= 12; }
+  };
+  // cols: { label, w, align, f(row), sub?(row), color?(row), bold? }
+  const table = (cols, data, { totals, rowH = 20 } = {}) => {
+    const head = () => {
+      rect(M, y - 7, CW, 20, C.navy2);
+      let x = M + 7;
+      for (const c of cols) { text(c.label.toUpperCase(), x, y, { f: bold, size: 7, color: C.white, w: c.w - 12, align: c.align }); x += c.w; }
+      y -= 20;
+    };
+    need(64); head();
+    data.forEach((r, i) => {
+      // Keep the last row with the totals line, never a total alone on a page.
+      if (y - rowH - (totals && i === data.length - 1 ? 30 : 0) < BOTTOM) { newPage(); head(); }
+      if (i % 2) rect(M, y - rowH + 10, CW, rowH, C.zebra);
+      let x = M + 7;
+      for (const c of cols) {
+        text(c.f(r), x, y, { f: c.bold ? bold : font, size: 9, color: c.color ? c.color(r) : C.ink, w: c.w - 12, align: c.align });
+        if (c.sub) text(c.sub(r), x, y - 10, { size: 7, color: C.grey, w: c.w - 12, align: c.align });
+        x += c.w;
+      }
+      y -= rowH;
+    });
+    if (totals) {
+      need(28);
+      y -= 4;
+      page.drawLine({ start: { x: M, y: y + 14 }, end: { x: W - M, y: y + 14 }, thickness: 1, color: C.navy });
+      let x = M + 7;
+      cols.forEach((c, i) => { if (totals[i]) text(totals[i], x, y, { f: bold, size: 9, w: c.w - 12, align: c.align }); x += c.w; });
+      y -= 20;
+    }
+    y -= 10;
   };
 
-  newPage();
-  const navy = rgb(0.078, 0.165, 0.298), gold = rgb(0.941, 0.706, 0.161);
-  page.drawRectangle({ x: 0, y: H - 64, width: W, height: 64, color: navy });
-  page.drawRectangle({ x: 0, y: H - 67, width: W, height: 3, color: gold });
-  page.drawText("EFC TRIP EXPENSES", { x: M, y: H - 30, size: 9, font: bold, color: gold });
-  page.drawText(clean(t.name), { x: M, y: H - 52, size: 18, font: bold, color: rgb(1, 1, 1) });
-  y = H - 90;
-  text(`${t.location ? t.location + " · " : ""}${day(t.start_date)} - ${day(t.end_date)}, ${t.end_date.slice(0, 4)}`, M, y, { color: grey, size: 10 }); y -= 13;
-  text(t.status === "final" ? `Finalized ${new Date(t.finalized_at).toLocaleDateString()} by ${t.finalized_by}` : `DRAFT - not finalized (printed ${new Date().toLocaleDateString()})`, M, y, { color: grey, size: 10 });
-  y -= 6;
+  // ---------- page 1: summary ----------
+  page = doc.addPage([W, H]);
+  rect(0, H - 104, W, 104, C.navy); rect(0, H - 108, W, 4, C.gold);
+  text("EFC TRIP EXPENSES  |  RECORD OF SHARED COSTS", M, H - 34, { f: bold, size: 8, color: C.gold });
+  text(t.name, M, H - 64, { f: bold, size: tw(t.name, bold, 24) > CW - 130 ? 18 : 24, color: C.white, w: CW - 130 });
+  text(`${range(t)}${t.location ? "   |   " + t.location : ""}`, M, H - 86, { size: 10, color: C.soft, w: CW - 130 });
+  const stamp = isFinal ? "FINAL" : "DRAFT", sw = 78;
+  rect(W - M - sw, H - 70, sw, 24, isFinal ? C.gold : C.navy, C.gold);
+  text(stamp, W - M - sw, H - 62, { f: bold, size: 11, color: isFinal ? C.navy : C.gold, w: sw, align: "center" });
+  text(isFinal ? `Finalized ${fullDate(new Date(t.finalized_at))}` : "Amounts may still change", W - M - 180, H - 86, { size: 8, color: C.soft, w: 180, align: "right" });
+  y = H - 132;
 
-  const total = expenses.reduce((s, e) => s + e.amount_cents, 0);
-  heading("Shared expenses");
-  table([["Day", 70], ["What", 168], ["Paid by", 82], ["Split", 90], ["Receipt", 52], ["Amount", 70, "right"]],
-    expenses.map(e => [day(e.date), e.description, fam(e.paid_by), BASES[e.basis].label, rnum.get(e.id) || "none", money(e.amount_cents)]),
-    ["", `${expenses.length} expenses`, "", "", "", money(total)]);
+  const figs = [
+    ["Total shared costs", money(total), 16],
+    ["Expenses", `${expenses.length}  (${withReceipt.length} with receipt${withReceipt.length === 1 ? "" : "s"})`, 11],
+    ["Treasurer", t.treasurer_name ? `${t.treasurer_name}${t.treasurer_family_id ? ` (${fam(t.treasurer_family_id)})` : ""}` : "Not assigned", 11],
+  ];
+  const fw = (CW - 16) / 3;
+  figs.forEach(([label, value, size], i) => {
+    const x = M + i * (fw + 8);
+    rect(x, y - 30, fw, 42, C.zebra, C.line); rect(x, y - 30, 3, 42, C.gold);
+    text(label.toUpperCase(), x + 12, y, { f: bold, size: 7, color: C.grey, w: fw - 18 });
+    text(value, x + 12, y - 19, { f: bold, size, color: C.navy, w: fw - 18 });
+  });
+  y -= 60;
 
-  heading("Who pays what");
-  table([["Family", 150], ["Going", 50, "right"], ["Fencers", 56, "right"], ["Share", 88, "right"], ["Paid", 88, "right"], ["Balance", 100, "right"]],
-    families.map(f => {
-      const r = rows[f.id];
-      return [f.name, String(f.people.length), String(f.people.filter(p => p.is_fencer).length), money(r.owed), money(r.paid), (r.net > 0 ? "+" : "") + money(r.net)];
-    }));
-  y -= 4; need(12); y -= 10;
-  text("Balance: + is owed money, - owes. Shares follow the club's rule: each cost is split by what it was for, among those it was for.", M, y, { size: 8, color: grey });
-
-  heading("Settling up");
-  need(14); y -= 13;
-  text(t.treasurer_name ? `Treasurer: ${t.treasurer_name}${t.treasurer_family_id ? ` (${fam(t.treasurer_family_id)} family)` : ""}${t.treasurer_notes ? ` · send to: ${t.treasurer_notes}` : ""}` : "No treasurer assigned.",
-    M, y, { w: W - 2 * M });
-  const pay = t.status === "final" ? payments : [];
-  if (pay.length) {
-    table([["Family", 150], ["", 140], ["Amount", 80, "right"], ["", 12], ["Status", 150]],
-      pay.map(x => [fam(x.family_id), x.direction === "in" ? "pays the treasurer" : "is paid by the treasurer", money(x.amount_cents), "",
-        x.paid_at ? `Done ${new Date(x.paid_at).toLocaleDateString()} · ${x.paid_marked_by}` : "Waiting"]));
-  } else { need(14); y -= 13; text(t.status === "final" ? "Nobody owes anybody." : "Payments are fixed when the trip is finalized.", M, y, { color: grey }); }
-
-  heading("How costs were split");
-  for (const [k, b] of Object.entries(BASES)) {
-    const cats = Object.values(CATEGORIES).filter(c => c.basis === k).map(c => c.label);
-    const rule = { person: "everyone who was there counts as one", fencer: "one share per fencer at the tournament", fencer_day: "one share per day each fencer competed",
-      family: "one equal share per family that used it", custom: "shares set by hand" }[k];
-    need(13); y -= 12;
-    text(`${b.label}: ${rule}${cats.length ? ` (default for ${cats.join("; ")})` : ""}`, M, y, { size: 8.5, color: grey, w: W - 2 * M });
+  const due = new Map((isFinal ? payments : []).map(p => [p.family_id, p]));
+  const isT = f => t.treasurer_name && f.id === t.treasurer_family_id;
+  const settles = f => {
+    const n = rows[f.id].net;
+    if (isT(f)) return n > 0 ? `Keeps ${money(n)} (treasurer)` : n < 0 ? `Adds ${money(-n)} (treasurer)` : "Even (treasurer)";
+    return !n ? "All square" : n < 0 ? `Pays the treasurer ${money(-n)}` : `Is paid ${money(n)}`;
+  };
+  const status = f => {
+    if (!isFinal || isT(f)) return "";
+    const p = due.get(f.id);
+    if (!p) return "Nothing due";
+    return p.paid_at ? `Done ${new Date(p.paid_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : "Waiting";
+  };
+  section("Who pays what", "Each cost is split by what it was for, among the people it was for. Balance is what a family paid minus its share. Families that owe pay the treasurer; the treasurer pays families that are owed.");
+  table([
+    { label: "Family", w: 88, f: f => f.name, bold: true, sub: f => `${f.people.length} going, ${f.people.filter(p => p.is_fencer).length} fencing` },
+    { label: "Share", w: 66, align: "right", f: f => money(rows[f.id].owed) },
+    { label: "Paid", w: 66, align: "right", f: f => money(rows[f.id].paid) },
+    { label: "Balance", w: 70, align: "right", f: f => (rows[f.id].net > 0 ? "+" : "") + money(rows[f.id].net), color: f => rows[f.id].net > 0 ? C.get : rows[f.id].net < 0 ? C.owe : C.ink },
+    { label: "Settles by", w: 150, f: settles },
+    { label: "Status", w: CW - 440, f: status, color: f => due.get(f.id)?.paid_at ? C.get : C.ink2 },
+  ], families, { totals: ["Total", money(total), money(total), "", "", ""], rowH: 22 });
+  if (t.treasurer_name) {
+    need(30);
+    rect(M, y - 9, CW, 24, C.goldWash);
+    const lbl = `Send money to ${t.treasurer_name}:`;
+    text(lbl, M + 10, y - 1, { f: bold, size: 9 });
+    text(t.treasurer_notes || "ask the treasurer", M + 16 + tw(lbl, bold, 9), y - 1, { size: 9, w: CW - 30 - tw(lbl, bold, 9) });
+    y -= 34;
   }
 
-  // Receipts
+  section("Shared expenses", "R1, R2 and so on are the receipt pages at the end. The family statements show each family's part of every expense.");
+  table([
+    { label: "Day", w: 66, f: e => day(e.date) },
+    { label: "Expense", w: 156, f: e => e.description, sub: e => e.vendor || CATEGORIES[e.category]?.label || "" },
+    { label: "Paid by", w: 66, f: e => fam(e.paid_by) },
+    { label: "Split", w: 104, f: e => BASES[e.basis].label, sub: e => units(perExpense[e.id].total, e.basis) },
+    { label: "Receipt", w: 50, f: e => rnum.get(e.id) || "none", color: e => rnum.has(e.id) ? C.ink : C.grey },
+    { label: "Amount", w: CW - 442, align: "right", f: e => money(e.amount_cents), bold: true },
+  ], expenses, { totals: ["", `${expenses.length} expenses`, "", "", "", money(total)], rowH: 22 });
+
+  // ---------- family statements ----------
+  runningTitle = "Family statements";
+  if (y < 300) newPage(); else y -= 10;
+  section("Family statements", "Every expense each family shares, how it was divided, and that family's part of it. An asterisk marks someone who fenced.");
+  for (const f of families) {
+    const lines = expenses.filter(e => perExpense[e.id].shares[f.id]);
+    const r = rows[f.id];
+    need(70);
+    rect(M, y - 8, CW, 24, C.goldWash); rect(M, y - 8, 3, 24, C.gold);
+    text(`${f.name} family`, M + 12, y, { f: bold, size: 11, color: C.navy, w: 140 });
+    text(f.people.map(p => p.name + (p.is_fencer ? "*" : "")).join(", "), M + 160, y, { size: 8, color: C.ink2, w: CW - 170 });
+    y -= 26;
+    for (const e of lines) {
+      need(16);
+      const s = perExpense[e.id];
+      text(e.description, M + 12, y, { size: 9, w: 210 });
+      text(`${s.units[f.id]} of ${units(s.total, e.basis)}`, M + 230, y, { size: 8.5, color: C.grey, w: 140 });
+      text(`of ${money(e.amount_cents)}`, M + 370, y, { size: 8.5, color: C.grey, w: 70, align: "right" });
+      text(money(s.shares[f.id]), M + 440, y, { size: 9, w: CW - 446, align: "right" });
+      y -= 14;
+    }
+    if (!lines.length) { text("Not included in any expense.", M + 12, y, { size: 9, color: C.grey }); y -= 14; }
+    need(42);
+    hline(y + 8);
+    const word = r.net === 0 ? "Balance" : isT(f) ? (r.net > 0 ? "Keeps" : "Adds") : r.net < 0 ? "Owes" : "Is owed";
+    const pairs = [["Share", money(r.owed), C.ink], ["Paid", money(r.paid), C.ink], [word, money(Math.abs(r.net)), r.net < 0 ? C.owe : r.net > 0 ? C.get : C.ink]];
+    pairs.forEach(([l, v, col], i) => {
+      const x = M + 230 + i * 100;
+      text(l.toUpperCase(), x, y - 4, { f: bold, size: 7, color: C.grey, w: 94, align: i === 2 ? "right" : "left" });
+      text(v, x, y - 17, { f: bold, size: 10.5, color: col, w: 94, align: i === 2 ? "right" : "left" });
+    });
+    y -= 44;
+  }
+
+  // ---------- receipts: one per page, in the same frame ----------
   for (const e of withReceipt) {
-    const label = `${rnum.get(e.id)} · ${e.description} · ${money(e.amount_cents)} · paid by ${fam(e.paid_by)} · ${day(e.date)}`;
-    const bytes = await fetch(`/api/receipts/${e.receipt_key}`, { credentials: "same-origin" }).then(r => { if (!r.ok) throw new Error(`receipt ${rnum.get(e.id)} is missing`); return r.arrayBuffer(); });
+    newPage(`Receipt ${rnum.get(e.id)}`);
+    rect(M, y - 34, CW, 46, C.zebra, C.line); rect(M, y - 34, 46, 46, C.navy);
+    text(rnum.get(e.id), M, y - 15, { f: bold, size: 13, color: C.gold, w: 46, align: "center" });
+    text(e.description, M + 58, y - 4, { f: bold, size: 12, color: C.navy, w: CW - 190 });
+    text(`${day(e.date)}   |   paid by ${fam(e.paid_by)}   |   ${BASES[e.basis].label.toLowerCase()}${e.vendor ? "   |   " + e.vendor : ""}`, M + 58, y - 22, { size: 8, color: C.grey, w: CW - 190 });
+    text(money(e.amount_cents), W - M - 124, y - 13, { f: bold, size: 15, w: 114, align: "right" });
+    const top = y - 52;
+    const frame = (draw, w0, h0, avail) => {
+      const s = Math.min(CW / w0, avail / h0, 1.5);
+      const w = w0 * s, h = h0 * s, x = M + (CW - w) / 2, yy = top - h;
+      rect(x - 1, yy - 1, w + 2, h + 2, undefined, C.line);
+      draw({ x, y: yy, width: w, height: h });
+    };
+    let bytes;
+    try { bytes = await fetch(`/api/receipts/${e.receipt_key}`, { credentials: "same-origin" }).then(r => { if (!r.ok) throw new Error(); return r.arrayBuffer(); }); }
+    catch { text("This receipt couldn't be loaded.", M, top - 16, { color: C.grey }); continue; }
     if (e.receipt_type === "application/pdf") {
       let src;
       try { src = await PDFDocument.load(bytes, { ignoreEncryption: true }); }
-      catch { newPage(); text(label, M, y, { f: bold, size: 10 }); y -= 16; text("This PDF receipt couldn't be copied in. It's still stored in the app.", M, y, { color: grey }); continue; }
-      const pages = await doc.copyPages(src, src.getPageIndices());
-      for (const p of pages) {
-        doc.addPage(p);
-        const { width, height } = p.getSize();
-        p.drawRectangle({ x: 0, y: height - 20, width, height: 20, color: rgb(1, 1, 1), opacity: 0.9 });
-        page = p; text(label, 12, height - 14, { f: bold, size: 8.5, w: width - 24 });
+      catch { text("This PDF receipt couldn't be included. It's still stored in the app.", M, top - 16, { color: C.grey }); continue; }
+      const pages = src.getPages();
+      for (let i = 0; i < pages.length; i++) {
+        if (i > 0) newPage(`Receipt ${rnum.get(e.id)}, page ${i + 1} of ${pages.length}`);
+        const emb = await doc.embedPage(pages[i]);
+        const t0 = i > 0 ? y : top;
+        const s = Math.min(CW / emb.width, (t0 - BOTTOM - 8) / emb.height, 1);
+        const w = emb.width * s, h = emb.height * s, x = M + (CW - w) / 2;
+        rect(x - 1, t0 - h - 1, w + 2, h + 2, undefined, C.line);
+        page.drawPage(emb, { x, y: t0 - h, width: w, height: h });
       }
+      if (pages.length > 1) runningTitle = "";
     } else {
-      newPage();
-      text(label, M, y, { f: bold, size: 10, w: W - 2 * M });
       const img = e.receipt_type === "image/png" ? await doc.embedPng(bytes) : await doc.embedJpg(bytes);
-      const maxW = W - 2 * M, maxH = H - 2 * M - 24;
-      const s = Math.min(maxW / img.width, maxH / img.height, 1.5);
-      page.drawImage(img, { x: M + (maxW - img.width * s) / 2, y: H - M - 24 - img.height * s, width: img.width * s, height: img.height * s });
+      frame(box => page.drawImage(img, box), img.width, img.height, top - BOTTOM - 8);
     }
   }
+
+  // ---------- footer on every page ----------
+  const all = doc.getPages(), printed = fullDate(new Date());
+  all.forEach((p, i) => {
+    page = p;
+    hline(M + 6, C.line, 0.5);
+    text(`EFC Trip Expenses   |   ${t.name}   |   printed ${printed}`, M, M - 8, { size: 7.5, color: C.grey, w: CW - 90 });
+    text(`Page ${i + 1} of ${all.length}`, W - M - 90, M - 8, { size: 7.5, color: C.grey, w: 90, align: "right" });
+  });
 
   const out = await doc.save();
   const a = document.createElement("a");
