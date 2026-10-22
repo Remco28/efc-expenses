@@ -2,7 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 // @ts-ignore - plain JS module shared with the browser
-import { BASES, CATEGORIES } from "../public/split.js";
+import { BASES, CATEGORIES, balances, treasurerPlan } from "../public/split.js";
 
 interface Env {
   DB: D1Database;
@@ -87,6 +87,21 @@ async function allowedDays(env: Env, tid: number) {
   const end = new Date(t.end_date + "T12:00:00Z");
   while (d <= end && out.size < 60) { out.add(d.toISOString().slice(0, 10)); d.setUTCDate(d.getUTCDate() + 1); }
   return out;
+}
+
+async function loadTrip(env: Env, tid: number) {
+  const t = await tournament(env, tid);
+  const [fam, ppl, exp, pay, act] = await env.DB.batch([
+    env.DB.prepare("SELECT * FROM families WHERE tournament_id = ? ORDER BY name COLLATE NOCASE").bind(tid),
+    env.DB.prepare("SELECT p.* FROM people p JOIN families f ON f.id = p.family_id WHERE f.tournament_id = ? ORDER BY p.is_fencer DESC, p.id").bind(tid),
+    env.DB.prepare("SELECT * FROM expenses WHERE tournament_id = ? ORDER BY date IS NULL, date, id").bind(tid),
+    env.DB.prepare("SELECT * FROM payments WHERE tournament_id = ? ORDER BY direction, amount_cents DESC").bind(tid),
+    env.DB.prepare("SELECT * FROM activity WHERE tournament_id = ? ORDER BY id DESC LIMIT 50").bind(tid),
+  ]);
+  const people = (ppl.results as any[]).map(p => ({ ...p, is_fencer: !!p.is_fencer, days: JSON.parse(p.days), fencing_days: JSON.parse(p.fencing_days) }));
+  const families = (fam.results as any[]).map(f => ({ ...f, people: people.filter(p => p.family_id === f.id) }));
+  const expenses = (exp.results as any[]).map(e => ({ ...e, split: JSON.parse(e.split) }));
+  return { tournament: t, families, expenses, payments: pay.results, activity: act.results };
 }
 
 async function familyIds(env: Env, tid: number) {
@@ -206,20 +221,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   }
   if ((m = path.match(/^\/tournaments\/(\d+)$/))) {
     const tid = Number(m[1]);
-    if (method === "GET") {
-      const t = await tournament(env, tid);
-      const [fam, ppl, exp, tr, act] = await env.DB.batch([
-        env.DB.prepare("SELECT * FROM families WHERE tournament_id = ? ORDER BY name COLLATE NOCASE").bind(tid),
-        env.DB.prepare("SELECT p.* FROM people p JOIN families f ON f.id = p.family_id WHERE f.tournament_id = ? ORDER BY p.is_fencer DESC, p.id").bind(tid),
-        env.DB.prepare("SELECT * FROM expenses WHERE tournament_id = ? ORDER BY date IS NULL, date, id").bind(tid),
-        env.DB.prepare("SELECT * FROM transfers WHERE tournament_id = ? ORDER BY id").bind(tid),
-        env.DB.prepare("SELECT * FROM activity WHERE tournament_id = ? ORDER BY id DESC LIMIT 50").bind(tid),
-      ]);
-      const people = (ppl.results as any[]).map(p => ({ ...p, is_fencer: !!p.is_fencer, days: JSON.parse(p.days), fencing_days: JSON.parse(p.fencing_days) }));
-      const families = (fam.results as any[]).map(f => ({ ...f, people: people.filter(p => p.family_id === f.id) }));
-      const expenses = (exp.results as any[]).map(e => ({ ...e, split: JSON.parse(e.split) }));
-      return json({ tournament: t, families, expenses, transfers: tr.results, activity: act.results });
-    }
+    if (method === "GET") return json(await loadTrip(env, tid));
     if (method === "PATCH") {
       const t = await openTournament(env, tid);
       const b = await body(req);
@@ -242,16 +244,15 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   if ((m = path.match(/^\/tournaments\/(\d+)\/finalize$/)) && method === "POST") {
     const tid = Number(m[1]);
     const t = await openTournament(env, tid);
-    const b = await body(req);
-    const ids = await familyIds(env, tid);
-    const transfers = Array.isArray(b.transfers) ? b.transfers : [];
-    for (const x of transfers) {
-      if (!ids.has(Number(x.from_family)) || !ids.has(Number(x.to_family)) || !(Number(x.amount_cents) > 0)) throw new HttpError(400, "Bad payment list");
-    }
+    if (!t.treasurer_name) throw new HttpError(409, "Someone needs to be the treasurer before the trip can be finalized");
+    const trip = await loadTrip(env, tid);
+    const { rows, perExpense } = balances(trip.expenses, trip.families);
+    if (trip.expenses.some((e: any) => perExpense[e.id].total === 0)) throw new HttpError(409, "An expense has nobody included. Fix it first.");
+    const plan = treasurerPlan(rows, t.treasurer_family_id);
     await env.DB.batch([
-      env.DB.prepare("DELETE FROM transfers WHERE tournament_id = ?").bind(tid),
-      ...transfers.map((x: any) => env.DB.prepare("INSERT INTO transfers (tournament_id, from_family, to_family, amount_cents) VALUES (?, ?, ?, ?)")
-        .bind(tid, Number(x.from_family), Number(x.to_family), Math.round(Number(x.amount_cents)))),
+      env.DB.prepare("DELETE FROM payments WHERE tournament_id = ?").bind(tid),
+      ...plan.map((x: any) => env.DB.prepare("INSERT INTO payments (tournament_id, family_id, direction, amount_cents) VALUES (?, ?, ?, ?)")
+        .bind(tid, x.family_id, x.direction, x.amount_cents)),
       env.DB.prepare("UPDATE tournaments SET status = 'final', finalized_at = ?, finalized_by = ? WHERE id = ?").bind(now(), name, tid),
     ]);
     await log(env, tid, name, `finalized ${t.name}`);
@@ -261,21 +262,39 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const tid = Number(m[1]);
     await tournament(env, tid);
     await env.DB.batch([
-      env.DB.prepare("DELETE FROM transfers WHERE tournament_id = ?").bind(tid),
+      env.DB.prepare("DELETE FROM payments WHERE tournament_id = ?").bind(tid),
       env.DB.prepare("UPDATE tournaments SET status = 'open', finalized_at = NULL, finalized_by = NULL WHERE id = ?").bind(tid),
     ]);
     await log(env, tid, name, "reopened the tournament; payments will be recalculated");
     return json({ ok: true });
   }
-  if ((m = path.match(/^\/transfers\/(\d+)$/)) && method === "PATCH") {
+  if ((m = path.match(/^\/payments\/(\d+)$/)) && method === "PATCH") {
     const id = Number(m[1]);
-    const x = await env.DB.prepare(
-      `SELECT x.*, a.name AS from_name, b.name AS to_name FROM transfers x
-       JOIN families a ON a.id = x.from_family JOIN families b ON b.id = x.to_family WHERE x.id = ?`).bind(id).first<any>();
+    const x = await env.DB.prepare("SELECT x.*, f.name AS family FROM payments x JOIN families f ON f.id = x.family_id WHERE x.id = ?").bind(id).first<any>();
     if (!x) throw new HttpError(404, "No such payment");
     const paid = !!(await body(req)).paid;
-    await env.DB.prepare("UPDATE transfers SET paid_at = ?, paid_marked_by = ? WHERE id = ?").bind(paid ? now() : null, paid ? name : null, id).run();
-    await log(env, x.tournament_id, name, `marked ${x.from_name} → ${x.to_name} ${paid ? "paid" : "not paid"}`);
+    await env.DB.prepare("UPDATE payments SET paid_at = ?, paid_marked_by = ? WHERE id = ?").bind(paid ? now() : null, paid ? name : null, id).run();
+    const what = x.direction === "in" ? `${x.family}'s payment to the treasurer` : `the treasurer's payment to ${x.family}`;
+    await log(env, x.tournament_id, name, paid ? `marked ${what} as done` : `marked ${what} as not done`);
+    return json({ ok: true });
+  }
+  if ((m = path.match(/^\/tournaments\/(\d+)\/treasurer$/)) && method === "PUT") {
+    const tid = Number(m[1]);
+    const t = await tournament(env, tid);
+    const b = await body(req);
+    const notes = str(b.treasurer_notes, 1000);
+    if (t.status === "final") {
+      // Once final the treasurer is fixed; only where-to-send notes can change.
+      await env.DB.prepare("UPDATE tournaments SET treasurer_notes = ? WHERE id = ?").bind(notes, tid).run();
+      await log(env, tid, name, "updated the treasurer's payment notes");
+      return json({ ok: true });
+    }
+    const tname = str(b.treasurer_name, 80);
+    const fid = b.treasurer_family_id == null || b.treasurer_family_id === "" ? null : Number(b.treasurer_family_id);
+    if (fid != null && !(await familyIds(env, tid)).has(fid)) throw new HttpError(400, "Pick a family on this trip");
+    await env.DB.prepare("UPDATE tournaments SET treasurer_name = ?, treasurer_family_id = ?, treasurer_notes = ? WHERE id = ?")
+      .bind(tname || null, tname ? fid : null, tname ? notes : "", tid).run();
+    await log(env, tid, name, tname ? (tname === t.treasurer_name ? "updated the treasurer details" : `set ${tname} as treasurer`) : "removed the treasurer");
     return json({ ok: true });
   }
 
@@ -292,14 +311,23 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   if ((m = path.match(/^\/families\/(\d+)$/))) {
     const fid = Number(m[1]);
     const tid = await familyTournament(env, fid);
-    await openTournament(env, tid);
     if (method === "PATCH") {
       const b = await body(req);
-      if (!str(b.name)) throw new HttpError(400, "Give the family a name");
-      await env.DB.prepare("UPDATE families SET name = ? WHERE id = ?").bind(str(b.name), fid).run();
-      await log(env, tid, name, `renamed a family to ${str(b.name)}`);
+      const f = await env.DB.prepare("SELECT * FROM families WHERE id = ?").bind(fid).first<any>();
+      if (b.pay_notes != null) {
+        // How to pay this family; editable after finalizing, since that's when it's needed.
+        await env.DB.prepare("UPDATE families SET pay_notes = ? WHERE id = ?").bind(str(b.pay_notes, 300), fid).run();
+        await log(env, tid, name, `updated how to pay the ${f.name} family`);
+      }
+      if (b.name != null && str(b.name) !== f.name) {
+        await openTournament(env, tid);
+        if (!str(b.name)) throw new HttpError(400, "Give the family a name");
+        await env.DB.prepare("UPDATE families SET name = ? WHERE id = ?").bind(str(b.name), fid).run();
+        await log(env, tid, name, `renamed the ${f.name} family to ${str(b.name)}`);
+      }
       return json({ ok: true });
     }
+    await openTournament(env, tid);
     if (method === "DELETE") {
       const paid = await env.DB.prepare("SELECT COUNT(*) AS n FROM expenses WHERE paid_by = ?").bind(fid).first<any>();
       if (paid.n > 0) throw new HttpError(409, "This family paid for an expense. Change who paid first.");

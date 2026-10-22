@@ -1,4 +1,4 @@
-import { BASES, CATEGORIES, tournamentDays, autoUnits, defaultSplit, shares, balances, unsplit, settle, money } from "./split.js";
+import { BASES, CATEGORIES, tournamentDays, autoUnits, defaultSplit, shares, balances, unsplit, treasurerPlan, money } from "./split.js";
 
 const app = document.getElementById("app");
 const S = { name: load("efc-name"), list: null, trip: null, draft: null, personEdit: null, adding: null };
@@ -142,7 +142,7 @@ function renderHome() {
 // ---------- one trip ----------
 function renderTrip(tab) {
   const { tournament: t } = S.trip;
-  const tabs = [["expenses", "Expenses"], ["families", "Families"], ["settle", "Settle up"]]
+  const tabs = [["expenses", "Expenses"], ["families", "Families"], ["settle", "Settle up"], ["treasurer", "Treasurer"]]
     .map(([k, l]) => `<a href="#/t/${t.id}?tab=${k}" class="${k === tab ? "on" : ""}">${l}</a>`).join("");
   app.innerHTML = `
     <header class="top"><a class="back" href="#/" aria-label="All trips">‹</a>
@@ -151,7 +151,7 @@ function renderTrip(tab) {
     <nav class="tabs">${tabs}</nav>
     ${final() ? `<div class="callout good" style="margin-bottom:12px">Finalized by ${esc(t.finalized_by)} on ${new Date(t.finalized_at).toLocaleDateString()}. Reopen it from Settle up to make changes.</div>` : ""}
     <div id="tab"></div>`;
-  ({ expenses: tabExpenses, families: tabFamilies, settle: tabSettle })[tab]?.(document.getElementById("tab"));
+  ({ expenses: tabExpenses, families: tabFamilies, settle: tabSettle, treasurer: tabTreasurer })[tab]?.(document.getElementById("tab"));
 }
 
 function tabExpenses(el) {
@@ -174,6 +174,7 @@ function tabExpenses(el) {
             ${e.receipt_key ? "" : ` · <span class="chip warn">no receipt</span>`}${bad.has(e.id) ? ` · <span class="chip warn">nobody included</span>` : ""}</div></div>
         <div class="amt">${money(e.amount_cents)}</div></a>`; }).join("")}`).join("");
   el.innerHTML = `
+    ${!t.treasurer_name && expenses.length ? needTreasurerCallout(t) : ""}
     <div class="card"><div class="total-line"><span>${expenses.length} shared expense${expenses.length === 1 ? "" : "s"}</span><span class="num">${money(total)}</span></div>
       ${expenses.length ? rows : `<p class="empty">Nothing yet. Whoever pays for something shared adds it here, with a photo of the receipt.</p>`}</div>
     <p class="hint">Shared costs only: team meals, the coach's travel and stay, transport, supplies. Your own flight and room stay off this list, and so do coaching fees.</p>
@@ -198,6 +199,8 @@ function tabFamilies(el) {
       <div class="row between"><strong style="font-size:17px">${esc(f.name)}</strong>
         ${ro ? "" : `<span><button class="link" data-act="rename-family" data-id="${f.id}">Rename</button> · <button class="link danger" data-act="del-family" data-id="${f.id}">Remove</button></span>`}</div>
       <div class="faint small">${f.people.length} going · ${f.people.filter(p => p.is_fencer).length} fencing</div>
+      <div class="small" style="margin-top:4px">How to pay us: ${f.pay_notes ? esc(f.pay_notes) : `<span class="faint">not added yet</span>`}
+        <button class="link" data-act="pay-notes" data-id="${f.id}">${f.pay_notes ? "Edit" : "Add"}</button></div>
       ${f.people.map(personRow).join("")}
       ${S.adding === f.id ? personForm({ id: 0, family_id: f.id, name: "", is_fencer: true, days: [...days], fencing_days: [] }, days)
         : ro ? "" : `<div class="person"><button class="link" data-act="add-person" data-id="${f.id}">+ Add person</button></div>`}
@@ -447,26 +450,69 @@ async function saveExpense() {
 }
 
 // ---------- settle up ----------
+// Everyone settles through one treasurer, so each family has one payment:
+// it pays the treasurer, or the treasurer pays it.
+const tname = t => t.treasurer_name + (t.treasurer_family_id ? ` (${famName(t.treasurer_family_id)} family)` : "");
+const tripUrl = (t, tab) => `${location.origin}/#/t/${t.id}${tab ? "?tab=" + tab : ""}`;
+
+function plan() {
+  const { tournament: t, families, expenses } = S.trip;
+  if (final()) return S.trip.payments;
+  return treasurerPlan(balances(expenses, families).rows, t.treasurer_family_id);
+}
+
+function needTreasurerCallout(t) {
+  return `<div class="callout warn" style="margin-bottom:12px"><strong>No treasurer yet.</strong> Someone needs to collect what families owe and pay out
+    what others are owed before this trip can be settled.
+    <div class="actions" style="margin-top:8px"><a class="btn" href="#/t/${t.id}?tab=treasurer">I'll do it</a>
+    <button class="ghost" data-act="copy-need">Ask the group</button></div></div>`;
+}
+
+function needMessage(t) {
+  return `${t.name}: we need a treasurer to collect and pay out the shared trip costs. Could someone volunteer? It's one screen in the app: ${tripUrl(t, "treasurer")}`;
+}
+
+function finalMessage(t) {
+  const ins = plan().filter(x => x.direction === "in"), outs = plan().filter(x => x.direction === "out");
+  const lines = [`${t.name} expenses are final.`];
+  if (ins.length) lines.push(`Please pay ${t.treasurer_name}: ${ins.map(x => `${famName(x.family_id)} ${money(x.amount_cents)}`).join(", ")}.`);
+  if (t.treasurer_notes) lines.push(`Send to: ${t.treasurer_notes}`);
+  if (outs.length) lines.push(`${t.treasurer_name} will pay: ${outs.map(x => `${famName(x.family_id)} ${money(x.amount_cents)}`).join(", ")}.`);
+  lines.push(`Details: ${tripUrl(t, "settle")}`);
+  return lines.join("\n");
+}
+
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); toast("Copied. Paste it into the group chat."); }
+  catch { prompt("Copy this message:", text); }
+}
+
+const status = x => !final() ? `<span class="faint small">after finalizing</span>`
+  : x.paid_at ? `<span class="small get">✓ Done · ${esc(x.paid_marked_by)}, ${new Date(x.paid_at).toLocaleDateString()}</span>`
+  : `<span class="small faint">Waiting</span>`;
+
 function tabSettle(el) {
-  const { tournament: t, families, expenses, transfers, activity } = S.trip;
+  const { tournament: t, families, expenses, activity } = S.trip;
   const { rows, perExpense } = balances(expenses, families);
   const bad = unsplit(expenses, families);
   const noFence = families.flatMap(f => f.people.filter(p => p.is_fencer && !p.fencing_days.length));
-  const preview = settle(rows);
-  const list = final() ? transfers : preview;
+  const byFam = new Map(plan().map(x => [x.family_id, x]));
   const total = expenses.reduce((s, e) => s + e.amount_cents, 0);
   const famRows = families.map(f => {
     const r = rows[f.id];
     return `<tr><td>${esc(f.name)}</td><td class="n">${money(r.owed)}</td><td class="n">${money(r.paid)}</td>
       <td class="n ${r.net > 0 ? "get" : r.net < 0 ? "owe" : ""}"><strong>${r.net > 0 ? "+" : ""}${money(r.net)}</strong></td></tr>`;
   }).join("");
-  const xfers = list.length ? list.map(x => `
-    <div class="xfer ${x.paid_at ? "paid" : ""}" style="padding:10px 0;border-bottom:1px solid var(--line)">
-      <div><strong>${esc(famName(x.from_family))} → ${esc(famName(x.to_family))}</strong>
-        <div class="small ${x.paid_at ? "get" : "faint"}">${x.paid_at ? `✓ Paid · marked by ${esc(x.paid_marked_by)} ${new Date(x.paid_at).toLocaleDateString()}` : final() ? "Not paid yet" : "Preview"}</div></div>
-      <div style="text-align:right"><div class="amt">${money(x.amount_cents)}</div>
-        ${final() ? `<button class="link" data-act="toggle-paid" data-id="${x.id}" data-paid="${x.paid_at ? 0 : 1}">${x.paid_at ? "Undo" : "Mark paid"}</button>` : ""}</div>
-    </div>`).join("") : `<p class="faint">Nobody owes anybody.</p>`;
+  const todo = families.map(f => {
+    const x = byFam.get(f.id);
+    let what;
+    if (t.treasurer_name && f.id === t.treasurer_family_id) what = `<span class="muted">Treasurer's family: keeps what's left in the pot</span>`;
+    else if (!x) what = `<span class="muted">All square</span>`;
+    else if (!t.treasurer_name) what = x.direction === "in" ? `Owes <strong>${money(x.amount_cents)}</strong>` : `Is owed <strong>${money(x.amount_cents)}</strong>`;
+    else what = x.direction === "in" ? `Pays ${esc(t.treasurer_name)} <strong>${money(x.amount_cents)}</strong>` : `Gets <strong>${money(x.amount_cents)}</strong> from ${esc(t.treasurer_name)}`;
+    return `<div class="xfer" style="padding:10px 0;border-bottom:1px solid var(--line)"><div><strong>${esc(f.name)}</strong><div class="small">${what}</div></div>
+      <div style="text-align:right">${x && t.treasurer_name ? status(x) : ""}</div></div>`;
+  }).join("");
   const statement = f => {
     const lines = expenses.filter(e => perExpense[e.id].shares[f.id]).map(e => {
       const s = perExpense[e.id];
@@ -480,20 +526,86 @@ function tabSettle(el) {
   el.innerHTML = `
     ${bad.length ? `<div class="callout warn" style="margin-bottom:10px">${bad.length} expense${bad.length > 1 ? "s have" : " has"} nobody included: ${bad.map(e => esc(e.description)).join(", ")}. Fix ${bad.length > 1 ? "them" : "it"} before finalizing.</div>` : ""}
     ${noFence.length ? `<div class="callout warn" style="margin-bottom:10px">${noFence.map(p => esc(p.name)).join(", ")} ${noFence.length > 1 ? "have" : "has"} no fencing days ticked, so they pay nothing toward the coach's stay. Check Families.</div>` : ""}
+    ${t.treasurer_name ? `<div class="card"><div class="faint small">Treasurer</div><strong style="font-size:17px">${esc(tname(t))}</strong>
+        ${t.treasurer_notes ? `<div style="margin-top:6px"><span class="faint small">Send money to:</span> ${esc(t.treasurer_notes)}</div>` : ""}</div>`
+      : needTreasurerCallout(t)}
+    <div class="card"><h2 style="margin-top:0">${final() ? "What each family does" : "What each family will do"}</h2>
+      ${final() ? "" : `<p class="hint" style="margin-top:0">This changes as expenses are added. Finalize when everything is in.</p>`}${todo}</div>
     <div class="card"><h2 style="margin-top:0">Balances</h2>
       <table class="t"><tr><th>Family</th><th class="n">Share</th><th class="n">Paid</th><th class="n">Balance</th></tr>${famRows}
         <tr><td><strong>Total</strong></td><td class="n"><strong>${money(total)}</strong></td><td class="n"><strong>${money(total)}</strong></td><td></td></tr></table>
       <p class="hint">Balance: + means the family paid more than its share and is owed money; − means it owes.</p></div>
-    <div class="card"><h2 style="margin-top:0">${final() ? "Payments" : "Payments (preview)"}</h2>
-      ${final() ? "" : `<p class="hint" style="margin-top:0">These change as expenses are added. Finalize when everything is in.</p>`}
-      ${xfers}</div>
     <div class="card"><h2 style="margin-top:0">Each family's statement</h2>${families.map(statement).join("")}</div>
     <div class="actions">
-      ${final() ? `<button data-act="export">Download PDF</button><button class="ghost" data-act="reopen">Reopen</button>`
-        : `<button data-act="finalize" ${bad.length || !expenses.length ? "disabled" : ""}>Finalize trip</button>`}
+      ${final() ? `<button data-act="copy-final">Copy message for group chat</button><button class="ghost" data-act="export">Download PDF</button>`
+        : `<button data-act="finalize" ${bad.length || !expenses.length || !t.treasurer_name ? "disabled" : ""}>Finalize trip</button>`}
     </div>
+    ${final() ? `<div class="actions"><button class="ghost" data-act="reopen">Reopen</button></div>`
+      : !t.treasurer_name && expenses.length ? `<p class="hint">Finalizing needs a treasurer first.</p>` : ""}
     ${activity.length ? `<details class="card" style="margin-top:16px"><summary>Recent changes</summary>
       ${activity.map(a => `<div class="small" style="padding:4px 0"><span class="faint">${new Date(a.at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span> · ${esc(a.who)} ${esc(a.what)}</div>`).join("")}</details>` : ""}`;
+}
+
+// ---------- treasurer ----------
+function tabTreasurer(el) {
+  const { tournament: t, families } = S.trip;
+  const p = plan();
+  const ins = p.filter(x => x.direction === "in"), outs = p.filter(x => x.direction === "out");
+  const sum = (list, done) => list.filter(x => !done || x.paid_at).reduce((s, x) => s + x.amount_cents, 0);
+  const notesForm = `
+    <label class="f" for="tnotes">Where families send money</label>
+    <textarea id="tnotes" rows="2" placeholder="e.g. Venmo @lisa-chen or Zelle 555-0100">${esc(t.treasurer_notes || "")}</textarea>`;
+  const setup = final() ? "" : `
+    <form class="card" id="treas">
+      <h2 style="margin-top:0">${t.treasurer_name ? "Treasurer" : "Be the treasurer"}</h2>
+      <p class="muted small">The treasurer collects from every family that owes, then pays every family that's owed. Nobody else has to pay more than one person.</p>
+      <label class="f" for="tname">Treasurer's name</label><input id="tname" value="${esc(t.treasurer_name || S.name)}" required>
+      <label class="f" for="tfam">Their family on this trip</label><select id="tfam"><option value="">Not on this trip</option>
+        ${families.map(f => `<option value="${f.id}" ${t.treasurer_family_id === f.id ? "selected" : ""}>${esc(f.name)}</option>`).join("")}</select>
+      <p class="hint">If their family is on the trip, it doesn't pay itself. Its share is settled in the pot.</p>
+      ${notesForm}
+      <div class="actions"><button>${t.treasurer_name ? "Save" : "Set as treasurer"}</button>
+        ${t.treasurer_name ? `<button type="button" class="danger" data-act="clear-treasurer">Remove</button>` : ""}</div>
+    </form>`;
+  if (!t.treasurer_name) {
+    el.innerHTML = `${setup}<div class="actions"><button class="ghost" data-act="copy-need">Ask the group to volunteer</button></div>`;
+    return wireTreasurer(el, t);
+  }
+  const row = x => {
+    const f = families.find(ff => ff.id === x.family_id);
+    const how = x.direction === "out" ? `<div class="small">${f?.pay_notes ? "Send to: " + esc(f.pay_notes) : `<span class="faint">No payment details yet.</span> <button class="link" data-act="pay-notes" data-id="${x.family_id}">Add</button>`}</div>` : "";
+    return `<div class="xfer ${x.paid_at ? "paid" : ""}" style="padding:10px 0;border-bottom:1px solid var(--line)">
+      <div><strong>${esc(famName(x.family_id))}</strong>${how}<div>${status(x)}</div></div>
+      <div style="text-align:right"><div class="amt">${money(x.amount_cents)}</div>
+        ${final() ? `<button class="link" data-act="toggle-paid" data-id="${x.id}" data-paid="${x.paid_at ? 0 : 1}">${x.paid_at ? "Undo" : x.direction === "in" ? "Received" : "Sent"}</button>` : ""}</div></div>`;
+  };
+  const mine = t.treasurer_family_id ? balances(S.trip.expenses, families).rows[t.treasurer_family_id]?.net || 0 : 0;
+  el.innerHTML = `
+    ${final() ? `<div class="card"><div class="faint small">Treasurer</div><strong style="font-size:17px">${esc(tname(t))}</strong>
+      <form id="treas">${notesForm}<div class="actions"><button>Save notes</button></div></form></div>` : setup}
+    <div class="card"><h2 style="margin-top:0">${final() ? "Progress" : "Once finalized"}</h2>
+      <table class="t">
+        <tr><td>Collected</td><td class="n">${final() ? `${money(sum(ins, true))} of ` : ""}${money(sum(ins))}</td></tr>
+        <tr><td>Paid out</td><td class="n">${final() ? `${money(sum(outs, true))} of ` : ""}${money(sum(outs))}</td></tr>
+        ${final() ? `<tr><td>In hand now</td><td class="n"><strong>${money(sum(ins, true) - sum(outs, true))}</strong></td></tr>` : ""}
+      </table>
+      ${t.treasurer_family_id ? `<p class="hint">Your family's own balance is ${mine >= 0 ? `+${money(mine)}: keep that much of what's left` : `${money(mine)}: put that much in yourself`}. At the end the pot comes out exactly even.</p>`
+        : `<p class="hint">Everything collected gets paid out. The pot ends at $0.00.</p>`}</div>
+    <div class="card"><h2 style="margin-top:0">Collect from</h2>${ins.map(row).join("") || `<p class="faint">Nobody owes anything.</p>`}</div>
+    <div class="card"><h2 style="margin-top:0">Pay out to</h2>${outs.map(row).join("") || `<p class="faint">Nobody is owed anything.</p>`}</div>
+    ${final() ? `<div class="actions"><button data-act="copy-final">Copy message for group chat</button></div>` : ""}`;
+  wireTreasurer(el, t);
+}
+
+function wireTreasurer(el, t) {
+  const form = el.querySelector("#treas"); if (!form) return;
+  form.onsubmit = async ev => {
+    ev.preventDefault();
+    const body = { treasurer_notes: document.getElementById("tnotes").value };
+    if (!final()) { body.treasurer_name = document.getElementById("tname").value; body.treasurer_family_id = document.getElementById("tfam").value || null; }
+    await act(() => api(`/tournaments/${t.id}/treasurer`, { method: "PUT", body }), "Saved");
+    refresh("treasurer");
+  };
 }
 
 // ---------- clicks ----------
@@ -523,18 +635,30 @@ app.addEventListener("click", async ev => {
       await act(() => api(`/expenses/${id}`, { method: "DELETE" }), "Deleted"); S.draft = null; location.hash = `#/t/${t.id}`; return;
     case "drop-receipt": S.draft.receipt_key = null; S.draft.receipt_type = null; S.draft.aiNote = ""; return drawReceipt();
     case "finalize": {
-      const { rows } = balances(S.trip.expenses, S.trip.families);
-      if (!confirm("Finalize this trip? Expenses lock, the payments are fixed, and families can start marking them paid.")) return;
-      await act(() => api(`/tournaments/${t.id}/finalize`, { method: "POST", body: { transfers: settle(rows) } }), "Finalized");
-      return refresh("settle");
+      if (!confirm(`Finalize this trip? Expenses lock, and everyone settles through ${t.treasurer_name}.`)) return;
+      await act(() => api(`/tournaments/${t.id}/finalize`, { method: "POST" }), "Finalized");
+      await refresh("settle");
+      return copy(finalMessage(S.trip.tournament));
+    }
+    case "copy-final": return copy(finalMessage(t));
+    case "copy-need": return copy(needMessage(t));
+    case "clear-treasurer":
+      if (!confirm("Remove the treasurer?")) return;
+      await act(() => api(`/tournaments/${t.id}/treasurer`, { method: "PUT", body: { treasurer_name: "" } })); return refresh("treasurer");
+    case "pay-notes": {
+      const f = S.trip.families.find(x => x.id === id);
+      const n = prompt(`How should the treasurer pay the ${f.name} family? (e.g. Venmo @name or Zelle phone)`, f.pay_notes || "");
+      if (n == null) return;
+      await act(() => api(`/families/${id}`, { method: "PATCH", body: { pay_notes: n } }), "Saved");
+      return refresh(new URLSearchParams(location.hash.split("?")[1] || "").get("tab") || "families");
     }
     case "reopen": {
-      const paid = S.trip.transfers.some(x => x.paid_at);
+      const paid = S.trip.payments.some(x => x.paid_at);
       if (!confirm(paid ? "Reopen this trip? Payments already marked paid will be cleared and recalculated." : "Reopen this trip for changes?")) return;
       await act(() => api(`/tournaments/${t.id}/reopen`, { method: "POST" })); return refresh("settle");
     }
     case "toggle-paid":
-      await act(() => api(`/transfers/${id}`, { method: "PATCH", body: { paid: b.dataset.paid === "1" } })); return refresh("settle");
+      await act(() => api(`/payments/${id}`, { method: "PATCH", body: { paid: b.dataset.paid === "1" } })); return refresh("treasurer");
     case "export": {
       b.disabled = true; b.innerHTML = `<span class="spinner"></span> Building PDF…`;
       try { const { exportPdf } = await import("./pdf.js"); await exportPdf(S.trip); }

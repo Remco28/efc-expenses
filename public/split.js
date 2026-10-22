@@ -108,21 +108,18 @@ export function unsplit(expenses, families) {
   return expenses.filter(e => shares(e, families).total === 0);
 }
 
-// Fewest payments: repeatedly settle the largest debtor against the largest
-// creditor. Each step clears at least one family, so there are at most n-1.
-export function settle(rows) {
-  const d = Object.entries(rows).map(([id, r]) => ({ id: Number(id), v: r.net }));
+// Settling goes through one treasurer: each family that owes pays the
+// treasurer, and the treasurer pays each family that is owed. The treasurer's
+// own family (if they're on the trip) has no payment; whatever is left in the
+// pot at the end is exactly their own balance.
+export function treasurerPlan(rows, treasurerFamilyId) {
   const out = [];
-  for (;;) {
-    d.sort((a, b) => a.v - b.v || a.id - b.id);
-    const lo = d[0], hi = d[d.length - 1];
-    if (!lo || lo.v >= 0 || hi.v <= 0) break;
-    const m = Math.min(-lo.v, hi.v);
-    out.push({ from_family: lo.id, to_family: hi.id, amount_cents: m });
-    lo.v += m;
-    hi.v -= m;
+  for (const [id, r] of Object.entries(rows)) {
+    if (treasurerFamilyId != null && Number(id) === Number(treasurerFamilyId)) continue;
+    if (r.net < 0) out.push({ family_id: Number(id), direction: "in", amount_cents: -r.net });
+    else if (r.net > 0) out.push({ family_id: Number(id), direction: "out", amount_cents: r.net });
   }
-  return out;
+  return out.sort((a, b) => (a.direction === b.direction ? b.amount_cents - a.amount_cents : a.direction === "in" ? -1 : 1));
 }
 
 export function money(c) {

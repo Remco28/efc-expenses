@@ -18,7 +18,7 @@ const day = iso => iso ? new Date(iso + "T12:00:00Z").toLocaleDateString("en-US"
 
 export async function exportPdf(trip) {
   const { PDFDocument, StandardFonts, rgb } = await lib();
-  const { tournament: t, families, expenses, transfers } = trip;
+  const { tournament: t, families, expenses, payments } = trip;
   const { rows } = balances(expenses, families);
   const fam = id => families.find(f => f.id === Number(id))?.name || "?";
   const doc = await PDFDocument.create();
@@ -85,12 +85,15 @@ export async function exportPdf(trip) {
   y -= 4; need(12); y -= 10;
   text("Balance: + is owed money, - owes. Shares follow the club's rule: each cost is split by what it was for, among those it was for.", M, y, { size: 8, color: grey });
 
-  heading("Payments to settle up");
-  const pay = t.status === "final" ? transfers : [];
+  heading("Settling up");
+  need(14); y -= 13;
+  text(t.treasurer_name ? `Treasurer: ${t.treasurer_name}${t.treasurer_family_id ? ` (${fam(t.treasurer_family_id)} family)` : ""}${t.treasurer_notes ? ` · send to: ${t.treasurer_notes}` : ""}` : "No treasurer assigned.",
+    M, y, { w: W - 2 * M });
+  const pay = t.status === "final" ? payments : [];
   if (pay.length) {
-    table([["From", 120], ["To", 120], ["Amount", 80, "right"], ["", 12], ["Status", 200]],
-      pay.map(x => [fam(x.from_family), fam(x.to_family), money(x.amount_cents), "",
-        x.paid_at ? `Paid ${new Date(x.paid_at).toLocaleDateString()} · marked by ${x.paid_marked_by}` : "Not paid"]));
+    table([["Family", 150], ["", 140], ["Amount", 80, "right"], ["", 12], ["Status", 150]],
+      pay.map(x => [fam(x.family_id), x.direction === "in" ? "pays the treasurer" : "is paid by the treasurer", money(x.amount_cents), "",
+        x.paid_at ? `Done ${new Date(x.paid_at).toLocaleDateString()} · ${x.paid_marked_by}` : "Waiting"]));
   } else { need(14); y -= 13; text(t.status === "final" ? "Nobody owes anybody." : "Payments are fixed when the trip is finalized.", M, y, { color: grey }); }
 
   heading("How costs were split");

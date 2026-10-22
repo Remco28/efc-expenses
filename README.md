@@ -1,6 +1,6 @@
 # EFC Trip Expenses
 
-A small web app our fencing club's parents use to track and split shared costs on travel tournaments: team meals, the coach's travel and stay, and ground transport. Whoever pays adds the expense, optionally with a photo or PDF of the receipt, which Claude reads to fill in the form. When the trip is over, someone finalizes it. The app then lists the fewest payments that settle everyone, families mark them paid, and anyone can download a PDF record: a summary page followed by every receipt.
+A small web app our fencing club's parents use to track and split shared costs on travel tournaments: team meals, the coach's travel and stay, and ground transport. Whoever pays adds the expense, optionally with a photo or PDF of the receipt, which Claude reads to fill in the form. Settling goes through one volunteer treasurer. A trip has no treasurer until someone signs up, and the app nudges the group until one does. When the trip is finalized, every family that owes pays the treasurer, and the treasurer pays every family that's owed: one payment per family. The treasurer has a checklist screen to tick off money in and money out. Anyone can download a PDF record: a summary page followed by every receipt.
 
 Coaching fees are not tracked here, because the coach bills those directly. Personal costs, such as your own flight or room, are not tracked either.
 

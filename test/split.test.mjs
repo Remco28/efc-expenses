@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { autoUnits, defaultSplit, shares, balances, settle, tournamentDays } from "../public/split.js";
+import { autoUnits, defaultSplit, shares, balances, treasurerPlan, tournamentDays } from "../public/split.js";
 
 const days = tournamentDays("2026-07-01", "2026-07-10");
 const fam = (id, name, people) => ({ id, name, people });
@@ -50,20 +50,34 @@ test("shares always add up to the amount, to the cent", () => {
   }
 });
 
-test("balances net to zero and settle-up clears every balance", () => {
-  const expenses = [
-    { id: 1, amount_cents: 26400, basis: "person", date: days[0], paid_by: 1, split: defaultSplit("person", ten, days[0]) },
-    { id: 2, amount_cents: 38600, basis: "fencer", date: null, paid_by: 4, split: defaultSplit("fencer", ten, null) },
-    { id: 3, amount_cents: 41200, basis: "fencer_day", date: null, paid_by: 2, split: defaultSplit("fencer_day", ten, null) },
-    { id: 4, amount_cents: 3600, basis: "family", date: null, paid_by: 3, split: defaultSplit("family", ten, null) },
-  ];
-  const { rows } = balances(expenses, ten);
+const sample = [
+  { id: 1, amount_cents: 26400, basis: "person", date: days[0], paid_by: 1, split: defaultSplit("person", ten, days[0]) },
+  { id: 2, amount_cents: 38600, basis: "fencer", date: null, paid_by: 4, split: defaultSplit("fencer", ten, null) },
+  { id: 3, amount_cents: 41200, basis: "fencer_day", date: null, paid_by: 2, split: defaultSplit("fencer_day", ten, null) },
+  { id: 4, amount_cents: 3600, basis: "family", date: null, paid_by: 3, split: defaultSplit("family", ten, null) },
+];
+
+test("balances net to zero", () => {
+  const { rows } = balances(sample, ten);
   assert.equal(Object.values(rows).reduce((s, r) => s + r.net, 0), 0);
-  const xs = settle(rows);
-  assert.ok(xs.length <= ten.length - 1);
-  const left = Object.fromEntries(Object.entries(rows).map(([id, r]) => [id, r.net]));
-  for (const x of xs) { left[x.from_family] += x.amount_cents; left[x.to_family] -= x.amount_cents; }
-  assert.ok(Object.values(left).every(v => v === 0));
+});
+
+test("a treasurer from outside the trip ends with an empty pot", () => {
+  const { rows } = balances(sample, ten);
+  const plan = treasurerPlan(rows, null);
+  const pot = plan.reduce((s, x) => s + (x.direction === "in" ? x.amount_cents : -x.amount_cents), 0);
+  assert.equal(pot, 0);
+  assert.equal(plan.length, Object.values(rows).filter(r => r.net !== 0).length);
+});
+
+test("a treasurer on the trip ends with exactly their own balance", () => {
+  const { rows } = balances(sample, ten);
+  for (const f of ten) {
+    const plan = treasurerPlan(rows, f.id);
+    assert.ok(plan.every(x => x.family_id !== f.id));
+    const pot = plan.reduce((s, x) => s + (x.direction === "in" ? x.amount_cents : -x.amount_cents), 0);
+    assert.equal(pot, rows[f.id].net, `treasurer ${f.name}`);
+  }
 });
 
 test("an expense with everyone unticked splits to nobody", () => {
