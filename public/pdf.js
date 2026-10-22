@@ -45,7 +45,7 @@ export async function exportPdf(trip) {
     zebra: rgb(0.965, 0.972, 0.982), white: rgb(1, 1, 1), soft: rgb(0.85, 0.89, 0.95), get: rgb(0.11, 0.48, 0.27), owe: rgb(0.7, 0.21, 0.12),
   };
   const W = 612, H = 792, M = 48, CW = W - 2 * M, BOTTOM = M + 22;
-  const total = expenses.reduce((s, e) => s + e.amount_cents, 0);
+  const total = Object.values(rows).reduce((s, r) => s + r.owed, 0);   // only expenses someone shares
   const withReceipt = expenses.filter(e => e.receipt_key);
   const rnum = new Map(withReceipt.map((e, i) => [e.id, "R" + (i + 1)]));
 
@@ -235,9 +235,10 @@ export async function exportPdf(trip) {
 
   // Who was there and who fenced, by day: the basis for every count above.
   {
-    const days = []; for (let d = utc(t.start_date); d <= utc(t.end_date); d.setUTCDate(d.getUTCDate() + 1)) days.push(d.toISOString().slice(0, 10));
+    const days = []; for (let d = utc(t.start_date); d <= utc(t.end_date) && days.length < 60; d.setUTCDate(d.getUTCDate() + 1)) days.push(d.toISOString().slice(0, 10));
     const people = families.filter(f => f.kind !== "staff").flatMap(f => f.people.map(p => ({ ...p, fam: f.name })));
     const dayW = Math.min(46, (CW - 170) / days.length);
+    runningTitle = "Who was there, by day";
     need(64 + 30 + 20 + 16 * Math.min(people.length, 4)); // title, note, header and a few rows stay together
     section("Who was there, by day", "The basis for every count in this record. x = there that day; F = there and fenced that day (one fencer-day). Per-person costs count the people there on the cost's day; per-fencer-day costs count the F marks.");
     const head = () => {

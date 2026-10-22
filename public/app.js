@@ -184,7 +184,10 @@ async function route() {
   }
 }
 
+let routeSeq = 0;
 async function show() {
+  const seq = ++routeSeq;
+  const stale = () => seq !== routeSeq;   // they've already moved on
   const h = location.hash.replace(/^#\/?/, "");
   const [path, query] = h.split("?");
   const parts = path.split("/").filter(Boolean);
@@ -193,7 +196,9 @@ async function show() {
   try {
     if (parts[0] === "t" && parts[1]) {
       await famQueue;                 // let any save from the family screen land first
-      await loadTrip(Number(parts[1]));
+      const trip = await api(`/tournaments/${Number(parts[1])}`);
+      if (stale()) return;
+      S.trip = trip;
       if (parts[2] === "e") return renderEditor(parts[3] === "new" ? null : Number(parts[3]));
       if (parts[2] === "f") { S.draft = null; return renderFamily(Number(parts[3])); }
       if (parts[2] === "day") { S.draft = null; return renderDay(parts[3]); }
@@ -202,8 +207,10 @@ async function show() {
       return renderTrip(["expenses", "families", "settle", "treasurer"].includes(tab) ? tab : "expenses");
     }
     S.draft = null;
-    if (parts[0] === "deleted") return renderDeleted(await api("/tournaments/deleted"));
-    S.list = await api("/tournaments");
+    if (parts[0] === "deleted") { const del = await api("/tournaments/deleted"); if (!stale()) renderDeleted(del); return; }
+    const list = await api("/tournaments");
+    if (stale()) return;
+    S.list = list;
     renderHome();
     if (!load("efc-tour-seen")) showTour();
   } catch (e) {
@@ -689,9 +696,17 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
     const here = () => location.hash.startsWith(`#/t/${S.trip.tournament.id}/f/${fid}`);
     if (!here()) return;
     const f = focusAfter || focusKey();
+    // Text not yet saved (a field still being typed in, the new person's name)
+    // survives the redraw.
+    const keepIds = ["newname", "fam-name", "fam-pay", "st-name", "st-role"];
+    const typed = Object.fromEntries(keepIds.map(id => [id, document.getElementById(id)]).filter(([, el]) => el && el.value !== el.defaultValue).map(([id, el]) => [id, el.value]));
+    const act0 = document.activeElement;
+    const typedName = act0?.dataset?.pname && act0.value !== act0.defaultValue ? [act0.dataset.pname, act0.value] : null;
     await loadTrip(S.trip.tournament.id);
     if (!here()) return;
     renderFamily(fid, f);
+    for (const [id, v] of Object.entries(typed)) { const el = document.getElementById(id); if (el) el.value = v; }
+    if (typedName) { const el = document.querySelector(`[data-pname="${typedName[0]}"]`); if (el) el.value = typedName[1]; }
     if (st()) { st().textContent = `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
    } catch (e) { console.error(e); if (st()) st().textContent = ""; }     // a failed reload must not block later saves
   });
@@ -702,24 +717,23 @@ function wireFamily(f) {
   const root = app, fid = f.id;
   // Flip the tapped button now, then send what the whole row shows, so quick
   // taps each build on the last instead of on the page as first drawn.
-  const tap = (b, sel) => {
-    b.classList.toggle("on"); b.setAttribute("aria-pressed", b.classList.contains("on"));
-    return [...root.querySelectorAll(sel)].filter(x => x.classList.contains("on")).map(x => x.dataset.day);
-  };
   const name = document.getElementById("fam-name"), pay = document.getElementById("fam-pay");
   if (name) name.onchange = () => name.value.trim() && famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { name: name.value } }));
   if (pay) pay.onchange = () => famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { pay_notes: pay.value } }));
+  // Each tap sends one change ("add Saturday"), so a screen left open on another
+  // phone can't overwrite days someone set since.
+  const flipBtn = b => { b.classList.toggle("on"); b.setAttribute("aria-pressed", b.classList.contains("on")); return b.classList.contains("on"); };
   root.querySelectorAll("[data-famday]").forEach(b => b.onclick = () => {
-    const days = tap(b, "[data-famday]");
-    famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { days } }));
+    const on = flipBtn(b);
+    famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { day: b.dataset.day, on } }));
   });
   root.querySelectorAll("[data-fence]").forEach(b => b.onclick = () => {
-    const id = b.dataset.fence, days = tap(b, `[data-fence="${id}"]`);
-    famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { fencing_days: days } }));
+    const on = flipBtn(b);
+    famSave(fid, () => api(`/people/${b.dataset.fence}`, { method: "PATCH", body: { fencing_day: b.dataset.day, on } }));
   });
   root.querySelectorAll("[data-own]").forEach(b => b.onclick = () => {
-    const id = b.dataset.own, days = tap(b, `[data-own="${id}"]`);
-    famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { own_days: true, days } }));
+    const on = flipBtn(b);
+    famSave(fid, () => api(`/people/${b.dataset.own}`, { method: "PATCH", body: { own_day: b.dataset.day, on } }));
   });
   root.querySelectorAll("[data-fencer]").forEach(c => c.onchange = () =>
     famSave(fid, () => api(`/people/${c.dataset.fencer}`, { method: "PATCH", body: { is_fencer: c.checked } })));
@@ -732,6 +746,7 @@ function wireFamily(f) {
     const n = document.getElementById("newname").value.trim();
     if (!n) { document.getElementById("newname").focus(); return toast("Type a first name"); }
     add.dataset.busy = "1"; add.querySelector("button").disabled = true;
+    document.getElementById("newname").value = "";
     const fencer = document.getElementById("newfencer").checked;
     await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: fencer } }), `${n} added`);
     document.getElementById("newname")?.focus();
@@ -780,7 +795,7 @@ function renderEditor(id) {
     const me = myFamily();
     // Families added since this expense was entered count automatically too.
     const split = e ? { ...Object.fromEntries(families.filter(f => f.kind !== "staff").map(f => [f.id, e.basis === "custom" ? 0 : null])), ...e.split } : {};
-    S.draft = e ? { ...e, split, amount: (e.amount_cents / 100).toFixed(2), basisTouched: true }
+    S.draft = e ? { ...e, split, amount: (e.amount_cents / 100).toFixed(2), basisTouched: true, splitTouched: true, catTouched: true, dateTouched: true }
       : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "person", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, basisTouched: false };
     if (!e) S.draft.split = defaultSplit("person", families);
   }
@@ -816,8 +831,10 @@ function renderEditor(id) {
   const $ = s => document.getElementById(s);
   const pull = () => { d.amount = $("amt").value; d.description = $("desc").value; d.vendor = $("vend").value; };
   ["amt", "desc", "vend"].forEach(k => $(k).addEventListener("input", () => { pull(); drawSplit(); }));
-  $("day").onchange = () => { d.date = $("day").value || null; resetSplit(); };
-  $("cat").onchange = () => { d.category = $("cat").value; if (!d.basisTouched) { d.basis = CATEGORIES[d.category].basis; resetSplit(); } };
+  // Changing the day keeps the sharing as set: automatic families follow the
+  // day by themselves, and unticked families or hand-set counts stay.
+  $("day").onchange = () => { d.date = $("day").value || null; d.dateTouched = true; drawSplit(); };
+  $("cat").onchange = () => { d.category = $("cat").value; d.catTouched = true; if (!d.basisTouched) { d.basis = CATEGORIES[d.category].basis; resetSplit(); } };
   $("paid").onclick = ev => { const b = ev.target.closest("[data-fam]"); if (!b) return; d.paid_by = Number(b.dataset.fam); markPaid(); drawSplit(); };
   $("basis").onclick = ev => { const b = ev.target.closest("[data-basis]"); if (!b || b.dataset.basis === d.basis) return; d.basis = b.dataset.basis; d.basisTouched = true; d.splitTouched = true; resetSplit(); };
   $("ex").onsubmit = async ev => { ev.preventDefault(); pull(); await saveExpense(); };
@@ -873,6 +890,7 @@ function drawSplit() {
     ? "For this split the day is only for the record: the cost is shared across every fencing day of the trip."
     : d.basis === "person" || d.basis === "family" ? (() => {
         const away = d.date ? families.filter(f => !autoUnits(d.basis, f, d.date)).map(f => f.name) : [];
+        if (!d.date) return "Shared by everyone on the trip, whichever days they came. Pick a day if it was only for that day.";
         return (away.length ? `Not there that day, so not sharing: ${away.join(", ")}. ` : "")
           + "Only families there on this day share the cost. Pick \"Whole trip\" if it covered more than one day.";
       })() : "";
@@ -896,8 +914,9 @@ function drawSplit() {
     const u = ev.target.closest("[data-units]"); if (!u) return;
     d.splitTouched = true;
     d.split[u.dataset.units] = u.value === "" ? null : Math.max(0, Number(u.value));
-    const pos = u.selectionStart; drawSplit();
-    const again = el.querySelector(`[data-units="${u.dataset.units}"]`); again.focus(); try { again.setSelectionRange(pos, pos); } catch {}
+    let pos = null; try { pos = u.selectionStart; } catch {}
+    drawSplit();
+    const again = el.querySelector(`[data-units="${u.dataset.units}"]`); again.focus(); if (pos != null) try { again.setSelectionRange(pos, pos); } catch {}
   };
 }
 
@@ -946,11 +965,11 @@ async function uploadReceipt(file, tid) {
     const blob = await shrink(file);
     const r = await api(`/tournaments/${tid}/receipts`, { method: "POST", body: blob, headers: { "content-type": blob.type } });
     d.receipt_key = r.key; d.receipt_type = r.type; d.aiNote = "";
-    d.uploading = false;
-    if (!stillHere()) return;
+    if (!stillHere()) { d.uploading = false; return; }
     drawReceipt("reading");
     try { const f = await api(`/tournaments/${tid}/read-receipt`, { method: "POST", body: { key: r.key } }); if (stillHere()) fillFromReceipt(f, d); }
     catch (e) { if (e instanceof AuthError) throw e; d.aiNote = e.message; }
+    finally { d.uploading = false; }
   } catch (e) {
     d.uploading = false;
     if (e instanceof AuthError) return renderLogin();
@@ -965,8 +984,9 @@ function fillFromReceipt(f, d = S.draft) {
   if (f.total != null && !cents(d.amount)) { d.amount = f.total.toFixed(2); $("amt").value = d.amount; }
   if (f.description && !d.description) { d.description = f.description; $("desc").value = d.description; }
   if (f.vendor && !d.vendor) { d.vendor = f.vendor; $("vend").value = d.vendor; }
-  if (f.category && CATEGORIES[f.category]) { d.category = f.category; $("cat").value = f.category; if (!d.basisTouched) d.basis = CATEGORIES[f.category].basis; }
-  if (f.date && days.includes(f.date)) { d.date = f.date; $("day").value = f.date; }
+  // Only fill what they haven't chosen themselves.
+  if (f.category && Object.hasOwn(CATEGORIES, f.category) && !d.catTouched) { d.category = f.category; $("cat").value = f.category; if (!d.basisTouched) d.basis = CATEGORIES[f.category].basis; }
+  if (f.date && days.includes(f.date) && !d.dateTouched) { d.date = f.date; $("day").value = f.date; }
   // Keep any sharing changes they made while the receipt was being read.
   if (!d.splitTouched) d.split = defaultSplit(d.basis, S.trip.families);
   const out = f.date && !days.includes(f.date) ? ` The receipt is dated ${f.date}, which is outside the trip.` : "";
@@ -976,7 +996,7 @@ function fillFromReceipt(f, d = S.draft) {
 
 async function saveExpense() {
   const d = S.draft, t = S.trip.tournament;
-  if (d.uploading) return toast("The receipt is still uploading. Save again in a moment.");
+  if (d.uploading) return toast("The receipt is still being uploaded and read. Save again in a moment.");
   const amount_cents = cents(d.amount);
   if (amount_cents <= 0) { document.getElementById("amt").focus(); return toast("Enter the amount"); }
   if (!d.paid_by) { document.getElementById("paid").scrollIntoView({ block: "center" }); return toast("Pick the family that paid"); }
@@ -1035,7 +1055,7 @@ function tabSettle(el) {
   const bad = unsplit(expenses, families);
   const noFence = families.flatMap(f => f.people.filter(p => p.is_fencer && !p.fencing_days.length));
   const byFam = new Map(plan().map(x => [x.family_id, x]));
-  const total = expenses.reduce((s, e) => s + e.amount_cents, 0);
+  const total = Object.values(rows).reduce((s, r) => s + r.owed, 0);   // only expenses someone shares
   const todo = families.map(f => {
     const x = byFam.get(f.id);
     let what;
@@ -1229,7 +1249,9 @@ app.addEventListener("click", async ev => {
       case "toggle-paid": {
         const x = S.trip.payments.find(p => p.id === id);
         if (x && x.direction === "out" && b.dataset.paid === "1") {
-          const held = S.trip.payments.reduce((s, p) => s + (p.paid_at ? (p.direction === "in" ? p.amount_cents : -p.amount_cents) : 0), 0);
+          const tf = S.trip.tournament.treasurer_family_id;
+          const mine = tf ? balances(S.trip.expenses, S.trip.families).rows[tf]?.net || 0 : 0;
+          const held = (mine < 0 ? -mine : 0) + S.trip.payments.reduce((s, p) => s + (p.paid_at ? (p.direction === "in" ? p.amount_cents : -p.amount_cents) : 0), 0);
           if (x.amount_cents > held && !(await confirmSheet(`Record paying ${esc(famName(x.family_id))} ${money(x.amount_cents)}?`,
             `So far you've collected ${money(Math.max(held, 0))}, so this would come partly out of your own pocket until the others pay. That's fine if it's what you did.`, "Yes, I sent it"))) return;
         }

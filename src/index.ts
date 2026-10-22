@@ -52,7 +52,11 @@ async function body(req: Request): Promise<any> {
   try { return await req.json(); } catch { throw new HttpError(400, "Body must be JSON"); }
 }
 
-const isDate = (s: unknown) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+// A real calendar date (2026-13-45 matches the pattern but isn't one).
+const isDate = (s: unknown): s is string => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s)
+  && !Number.isNaN(Date.parse(s + "T12:00:00Z")) && new Date(s + "T12:00:00Z").toISOString().slice(0, 10) === s;
+const MAX_TRIP_DAYS = 60;
+const tripDays = (a: string, b: string) => Math.round((Date.parse(b + "T12:00:00Z") - Date.parse(a + "T12:00:00Z")) / 864e5) + 1;
 const str = (v: unknown, max = 200) => (typeof v === "string" ? v.trim().slice(0, max) : "");
 
 async function dropReceipt(env: Env, key: string | null) {
@@ -75,26 +79,33 @@ async function tournament(env: Env, id: number, { includeDeleted = false } = {})
   return t;
 }
 
-// Remove a trip for good: its receipts in R2, then its rows (children first,
-// because expenses point at families).
-async function purgeTrip(env: Env, tid: number, deletedBefore?: string) {
-  if (deletedBefore) {
-    const still = await env.DB.prepare("SELECT 1 FROM tournaments WHERE id = ? AND deleted_at IS NOT NULL AND deleted_at < ?").bind(tid, deletedBefore).first();
-    if (!still) return;
-  }
+// Remove a trip for good. Every delete is conditional on the trip still being
+// deleted (a restore may land at any moment), all in one all-or-nothing batch;
+// receipt files go only once the rows are really gone.
+async function purgeTrip(env: Env, tid: number, deletedBefore: string) {
+  const still = "EXISTS (SELECT 1 FROM tournaments WHERE id = ?1 AND deleted_at IS NOT NULL AND deleted_at < ?2)";
+  const res = await env.DB.batch([
+    env.DB.prepare(`DELETE FROM payments WHERE tournament_id = ?1 AND ${still}`).bind(tid, deletedBefore),
+    env.DB.prepare(`DELETE FROM expenses WHERE tournament_id = ?1 AND ${still}`).bind(tid, deletedBefore),
+    env.DB.prepare(`DELETE FROM families WHERE tournament_id = ?1 AND ${still}`).bind(tid, deletedBefore),
+    env.DB.prepare(`DELETE FROM activity WHERE tournament_id = ?1 AND ${still}`).bind(tid, deletedBefore),
+    env.DB.prepare(`DELETE FROM tournaments WHERE id = ?1 AND deleted_at IS NOT NULL AND deleted_at < ?2`).bind(tid, deletedBefore),
+  ]);
+  if (!res[res.length - 1].meta.changes) return;       // restored in time: nothing was removed
+  await dropOrphanReceipts(env, tid);
+}
+
+// Receipt files under a trip that no expense refers to any more.
+async function dropOrphanReceipts(env: Env, tid: number) {
+  const { results } = await env.DB.prepare("SELECT receipt_key FROM expenses WHERE tournament_id = ? AND receipt_key IS NOT NULL").bind(tid).all<any>();
+  const used = new Set(results.map(r => r.receipt_key));
   let cursor: string | undefined;
   do {
     const list = await env.RECEIPTS.list({ prefix: `t${tid}/`, cursor });
-    if (list.objects.length) await env.RECEIPTS.delete(list.objects.map(o => o.key));
+    const gone = list.objects.map(o => o.key).filter(k => !used.has(k));
+    if (gone.length) await env.RECEIPTS.delete(gone);
     cursor = list.truncated ? list.cursor : undefined;
   } while (cursor);
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM payments WHERE tournament_id = ?").bind(tid),
-    env.DB.prepare("DELETE FROM expenses WHERE tournament_id = ?").bind(tid),
-    env.DB.prepare("DELETE FROM families WHERE tournament_id = ?").bind(tid),
-    env.DB.prepare("DELETE FROM activity WHERE tournament_id = ?").bind(tid),
-    env.DB.prepare(`DELETE FROM tournaments WHERE id = ?${deletedBefore ? " AND deleted_at IS NOT NULL" : ""}`).bind(tid),
-  ]);
 }
 
 // Trips deleted more than 30 days ago go for good. Runs when the trip list is
@@ -104,6 +115,21 @@ async function purgeExpired(env: Env) {
   const old = await env.DB.prepare("SELECT id FROM tournaments WHERE deleted_at IS NOT NULL AND deleted_at < ? LIMIT 1").bind(cutoff).first<any>();
   if (old) await purgeTrip(env, old.id, cutoff);
 }
+
+// Everything a trip's money depends on, as one string, computed by the database.
+const FINGERPRINT_SQL = `
+  (SELECT COALESCE(group_concat(x, ';'), '') FROM (SELECT id || '|' || amount_cents || '|' || paid_by || '|' || basis || '|' || COALESCE(date, '') || '|' || split AS x FROM expenses WHERE tournament_id = ? ORDER BY id))
+  || '#' || (SELECT COALESCE(group_concat(x, ';'), '') FROM (SELECT p.id || '|' || p.days || '|' || p.fencing_days || '|' || p.is_fencer AS x FROM people p JOIN families f ON f.id = p.family_id WHERE f.tournament_id = ? ORDER BY p.id))
+  || '#' || (SELECT COALESCE(group_concat(x, ';'), '') FROM (SELECT id || '|' || kind AS x FROM families WHERE tournament_id = ? ORDER BY id))`;
+async function fingerprint(env: Env, tid: number): Promise<string> {
+  const r = await env.DB.prepare(`SELECT ${FINGERPRINT_SQL} AS f`).bind(tid, tid, tid).first<any>();
+  return r.f;
+}
+
+// A write that changes the money only applies while the trip is open; checked in
+// the same statement, so it can't slip in after a finalize.
+const OPEN = "EXISTS (SELECT 1 FROM tournaments WHERE id = ? AND status = 'open' AND deleted_at IS NULL)";
+const closed = () => new HttpError(409, "This trip was just finalized or deleted. Reload to see it.");
 
 async function openTournament(env: Env, id: number) {
   const t = await tournament(env, id);
@@ -187,18 +213,13 @@ async function expenseInput(env: Env, tid: number, b: any) {
 }
 
 // Put the practice trip back to its starting state: everything people added,
-// changed or uploaded is removed, then the seed families and expenses go back in.
+// changed or uploaded is removed and the seed goes back in, all in one
+// all-or-nothing batch, so two resets at once can't leave duplicates.
 async function resetSandbox(env: Env, req: Request, tid: number, name: string) {
   const t = await tournament(env, tid);
   if (!t.is_sandbox) throw new HttpError(403, "Only the practice trip can be reset");
-  // Receipts people uploaded to this trip
-  let cursor: string | undefined;
-  do {
-    const list = await env.RECEIPTS.list({ prefix: `t${tid}/`, cursor });
-    if (list.objects.length) await env.RECEIPTS.delete(list.objects.map(o => o.key));
-    cursor = list.truncated ? list.cursor : undefined;
-  } while (cursor);
-  await env.DB.batch([
+  const famId = "(SELECT id FROM families WHERE tournament_id = ? AND name = ? ORDER BY id DESC LIMIT 1)";
+  const stmts = [
     env.DB.prepare("DELETE FROM payments WHERE tournament_id = ?").bind(tid),
     env.DB.prepare("DELETE FROM expenses WHERE tournament_id = ?").bind(tid),
     env.DB.prepare("DELETE FROM families WHERE tournament_id = ?").bind(tid),
@@ -206,34 +227,30 @@ async function resetSandbox(env: Env, req: Request, tid: number, name: string) {
     env.DB.prepare(`UPDATE tournaments SET name = ?, location = ?, start_date = ?, end_date = ?, status = 'open', finalized_at = NULL, finalized_by = NULL,
       treasurer_name = NULL, treasurer_family_id = NULL, treasurer_notes = '' WHERE id = ?`)
       .bind(SANDBOX.name, SANDBOX.location, SANDBOX.start_date, SANDBOX.end_date, tid),
-  ]);
-  const fid: Record<string, number> = {};
+  ];
   for (const [fname, pay, people] of SANDBOX.families) {
     const famDays = [...new Set(people.flatMap(([, , days]: [string, number, string[], string[]]) => days))].sort();
-    const f = await env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes, days) VALUES (?, ?, ?, ?) RETURNING id").bind(tid, fname, pay, JSON.stringify(famDays)).first<any>();
-    fid[fname] = f.id;
-    await env.DB.batch(people.map(([pn, fencer, days, fdays]: [string, number, string[], string[]]) =>
-      env.DB.prepare("INSERT INTO people (family_id, name, is_fencer, days, fencing_days, own_days) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(f.id, pn, fencer, JSON.stringify(days), JSON.stringify(fdays), days.length === famDays.length ? 0 : 1)));
+    stmts.push(env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes, days) VALUES (?, ?, ?, ?)").bind(tid, fname, pay, JSON.stringify(famDays)));
+    for (const [pn, fencer, days, fdays] of people as [string, number, string[], string[]][])
+      stmts.push(env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, fencing_days, own_days) VALUES (${famId}, ?, ?, ?, ?, ?)`)
+        .bind(tid, fname, pn, fencer, JSON.stringify(days), JSON.stringify(fdays), days.length === famDays.length ? 0 : 1));
   }
-  const everyone = JSON.stringify(Object.fromEntries(Object.values(fid).map(id => [id, null])));
-  for (const [sname, role, pay] of SANDBOX.staff || []) {
-    const st = await env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes, days, kind, role) VALUES (?, ?, ?, '[]', 'staff', ?) RETURNING id").bind(tid, sname, pay, role).first<any>();
-    fid[sname] = st.id;
-  }
+  for (const [sname, role, pay] of SANDBOX.staff || [])
+    stmts.push(env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes, days, kind, role) VALUES (?, ?, ?, '[]', 'staff', ?)").bind(tid, sname, pay, role));
   const stamp = now();
-  const rows = [];
   for (const [desc, vendor, date, cat, basis, cents, payer, image] of SANDBOX.expenses) {
     let key: string | null = null;
     if (image) {
       const img = await env.ASSETS.fetch(new URL(image, req.url));
       if (img.ok) { key = `t${tid}/${crypto.randomUUID()}`; await env.RECEIPTS.put(key, img.body, { httpMetadata: { contentType: "image/jpeg" } }); }
     }
-    rows.push(env.DB.prepare(`INSERT INTO expenses (tournament_id, description, vendor, date, category, basis, amount_cents, paid_by, split, receipt_key, receipt_type, created_at, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Practice trip')`).bind(tid, desc, vendor, date, cat, basis, cents, fid[payer], everyone, key, key ? "image/jpeg" : null, stamp));
+    // An empty split means every family on automatic.
+    stmts.push(env.DB.prepare(`INSERT INTO expenses (tournament_id, description, vendor, date, category, basis, amount_cents, paid_by, split, receipt_key, receipt_type, created_at, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ${famId}, '{}', ?, ?, ?, 'Practice trip')`).bind(tid, desc, vendor, date, cat, basis, cents, tid, payer, key, key ? "image/jpeg" : null, stamp));
   }
-  await env.DB.batch(rows);
-  await log(env, tid, name, "reset the practice trip to its starting point");
+  stmts.push(env.DB.prepare("INSERT INTO activity (tournament_id, at, who, what) VALUES (?, ?, ?, ?)").bind(tid, stamp, name, "reset the practice trip to its starting point"));
+  await env.DB.batch(stmts);
+  await dropOrphanReceipts(env, tid);
 }
 
 const ReceiptFields = z.object({
@@ -250,6 +267,9 @@ async function readReceipt(env: Env, key: string, t: any) {
   const obj = await env.RECEIPTS.get(key);
   if (!obj) throw new HttpError(404, "Receipt not found");
   const type = obj.httpMetadata?.contentType || "";
+  // Encoding a big file for the model costs CPU the free plan doesn't have; photos
+  // are shrunk in the browser first, so this only stops large PDFs.
+  if (obj.size > 2_500_000) throw new HttpError(413, "That file is too large to read automatically. Enter it by hand.");
   const data = Buffer.from(await obj.arrayBuffer()).toString("base64");
   const file: Anthropic.ContentBlockParam = type === "application/pdf"
     ? { type: "document", source: { type: "base64", media_type: "application/pdf", data } }
@@ -323,6 +343,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const b = await body(req);
     if (!str(b.name)) throw new HttpError(400, "Give the tournament a name");
     if (!isDate(b.start_date) || !isDate(b.end_date) || b.end_date < b.start_date) throw new HttpError(400, "Check the dates");
+    if (tripDays(b.start_date, b.end_date) > MAX_TRIP_DAYS) throw new HttpError(400, `A trip can be at most ${MAX_TRIP_DAYS} days`);
     const r = await env.DB.prepare(
       "INSERT INTO tournaments (name, location, start_date, end_date, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?) RETURNING id")
       .bind(str(b.name), str(b.location), b.start_date, b.end_date, now(), name).first<any>();
@@ -338,6 +359,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const start = isDate(b.start_date) ? b.start_date : t.start_date;
       const end = isDate(b.end_date) ? b.end_date : t.end_date;
       if (end < start) throw new HttpError(400, "Check the dates");
+      if (tripDays(start, end) > MAX_TRIP_DAYS) throw new HttpError(400, `A trip can be at most ${MAX_TRIP_DAYS} days`);
       // Days outside new dates come off everyone's attendance and fencing days, so
       // no split keeps counting a day nobody can see or untick any more.
       const keep = (list: string) => JSON.stringify((JSON.parse(list) as string[]).filter(d => d >= start && d <= end));
@@ -346,9 +368,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       await env.DB.batch([
         env.DB.prepare("UPDATE tournaments SET name = ?, location = ?, start_date = ?, end_date = ? WHERE id = ?")
           .bind(str(b.name) || t.name, b.location == null ? t.location : str(b.location), start, end, tid),
-        ...fams.filter(f => keep(f.days) !== f.days).map(f => env.DB.prepare("UPDATE families SET days = ? WHERE id = ?").bind(keep(f.days), f.id)),
+        // "AND days = ?": skip a row someone changed since we read it.
+        ...fams.filter(f => keep(f.days) !== f.days).map(f => env.DB.prepare("UPDATE families SET days = ? WHERE id = ? AND days = ?").bind(keep(f.days), f.id, f.days)),
         ...ppl.filter(p => keep(p.days) !== p.days || keep(p.fencing_days) !== p.fencing_days)
-          .map(p => env.DB.prepare("UPDATE people SET days = ?, fencing_days = ? WHERE id = ?").bind(keep(p.days), keep(p.fencing_days), p.id)),
+          .map(p => env.DB.prepare("UPDATE people SET days = ?, fencing_days = ? WHERE id = ? AND days = ? AND fencing_days = ?").bind(keep(p.days), keep(p.fencing_days), p.id, p.days, p.fencing_days)),
       ]);
       await log(env, tid, name, "edited the tournament details");
       return json({ ok: true });
@@ -366,26 +389,26 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const tid = Number(m[1]);
     const t = await openTournament(env, tid);
     if (!t.treasurer_name) throw new HttpError(409, "Someone needs to be the treasurer before the trip can be finalized");
-    // Every change to a trip writes an activity row; if one lands while we're
-    // working out the payments, undo and ask them to try again.
-    const lastChange = () => env.DB.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM activity WHERE tournament_id = ?").bind(tid).first<any>().then(r => r.n);
-    const before = await lastChange();
+    // Payments are worked out from a snapshot, then written in one all-or-nothing
+    // batch that only applies if the trip is still open and nothing that affects
+    // the money changed since the snapshot (two finalizes, or a save landing in
+    // between, can't leave payments that disagree with the expenses).
+    const snap = await fingerprint(env, tid);
     const trip = await loadTrip(env, tid);
+    if ((await fingerprint(env, tid)) !== snap) throw new HttpError(409, "Someone changed the trip while you were finalizing. Check it and finalize again.");
     const { rows, perExpense } = balances(trip.expenses, trip.families);
     if (trip.expenses.some((e: any) => perExpense[e.id].total === 0)) throw new HttpError(409, "An expense has nobody included. Fix it first.");
     const plan = treasurerPlan(rows, t.treasurer_family_id);
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM payments WHERE tournament_id = ?").bind(tid),
-      ...plan.map((x: any) => env.DB.prepare("INSERT INTO payments (tournament_id, family_id, direction, amount_cents) VALUES (?, ?, ?, ?)")
-        .bind(tid, x.family_id, x.direction, x.amount_cents)),
-      env.DB.prepare("UPDATE tournaments SET status = 'final', finalized_at = ?, finalized_by = ? WHERE id = ? AND status = 'open'").bind(now(), name, tid),
+    const ok = `EXISTS (SELECT 1 FROM tournaments WHERE id = ? AND status = 'open' AND deleted_at IS NULL) AND (${FINGERPRINT_SQL}) = ?`;
+    const res = await env.DB.batch([
+      env.DB.prepare(`DELETE FROM payments WHERE tournament_id = ? AND ${ok}`).bind(tid, tid, tid, tid, tid, snap),
+      ...plan.map((x: any) => env.DB.prepare(`INSERT INTO payments (tournament_id, family_id, direction, amount_cents) SELECT ?, ?, ?, ? WHERE ${ok}`)
+        .bind(tid, x.family_id, x.direction, x.amount_cents, tid, tid, tid, tid, snap)),
+      env.DB.prepare(`UPDATE tournaments SET status = 'final', finalized_at = ?, finalized_by = ? WHERE id = ? AND ${ok}`).bind(now(), name, tid, tid, tid, tid, tid, snap),
     ]);
-    if ((await lastChange()) !== before) {
-      await env.DB.batch([
-        env.DB.prepare("DELETE FROM payments WHERE tournament_id = ?").bind(tid),
-        env.DB.prepare("UPDATE tournaments SET status = 'open', finalized_at = NULL, finalized_by = NULL WHERE id = ?").bind(tid),
-      ]);
-      throw new HttpError(409, "Someone changed the trip while you were finalizing. Check it and finalize again.");
+    if (!res[res.length - 1].meta.changes) {
+      const now2 = await tournament(env, tid);
+      throw new HttpError(409, now2.status === "final" ? "This trip was just finalized by someone else." : "Someone changed the trip while you were finalizing. Check it and finalize again.");
     }
     await log(env, tid, name, `finalized ${t.name}`);
     return json({ ok: true });
@@ -416,6 +439,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const id = Number(m[1]);
     const x = await env.DB.prepare("SELECT x.*, f.name AS family FROM payments x JOIN families f ON f.id = x.family_id WHERE x.id = ?").bind(id).first<any>();
     if (!x) throw new HttpError(404, "No such payment");
+    const pt = await tournament(env, x.tournament_id);   // 404s for a deleted trip
+    if (pt.status !== "final") throw new HttpError(409, "Payments can only be ticked off on a finalized trip.");
     const paid = !!(await body(req)).paid;
     await env.DB.prepare("UPDATE payments SET paid_at = ?, paid_marked_by = ? WHERE id = ?").bind(paid ? now() : null, paid ? name : null, id).run();
     const what = x.direction === "in" ? `${x.family}'s payment to the treasurer` : `the treasurer's payment to ${x.family}`;
@@ -435,7 +460,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     }
     const tname = str(b.treasurer_name, 80);
     const fid = b.treasurer_family_id == null || b.treasurer_family_id === "" ? null : Number(b.treasurer_family_id);
-    if (fid != null && !(await familyIds(env, tid)).has(fid)) throw new HttpError(400, "Pick a family on this trip");
+    if (fid != null) {
+      const fam = await env.DB.prepare("SELECT kind FROM families WHERE id = ? AND tournament_id = ?").bind(fid, tid).first<any>();
+      if (!fam || fam.kind !== "family") throw new HttpError(400, "Pick a family on this trip");
+    }
     await env.DB.prepare("UPDATE tournaments SET treasurer_name = ?, treasurer_family_id = ?, treasurer_notes = ? WHERE id = ?")
       .bind(tname || null, tname ? fid : null, tname ? notes : "", tid).run();
     await log(env, tid, name, tname ? (tname === t.treasurer_name ? "updated the treasurer details" : `set ${tname} as treasurer`) : "removed the treasurer");
@@ -481,18 +509,28 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       if (b.name != null && str(b.name) !== f.name) {
         await openTournament(env, tid);
         if (!str(b.name)) throw new HttpError(400, "Give the family a name");
-        await env.DB.prepare("UPDATE families SET name = ? WHERE id = ?").bind(str(b.name), fid).run();
+        await env.DB.prepare(`UPDATE families SET name = ? WHERE id = ? AND ${OPEN}`).bind(str(b.name), fid, tid).run();
         await log(env, tid, name, `renamed the ${f.name} family to ${str(b.name)}`);
       }
-      if (b.days != null) {
+      if (b.days != null || b.day != null) {
         await openTournament(env, tid);
-        const days = cleanDays(b.days, await allowedDays(env, tid));
-        const { results: ppl } = await env.DB.prepare("SELECT * FROM people WHERE family_id = ? AND own_days = 0").bind(fid).all<any>();
-        await env.DB.batch([
-          env.DB.prepare("UPDATE families SET days = ? WHERE id = ?").bind(JSON.stringify(days), fid),
-          ...ppl.map(p => env.DB.prepare("UPDATE people SET days = ?, fencing_days = ? WHERE id = ?")
-            .bind(JSON.stringify(days), JSON.stringify(JSON.parse(p.fencing_days).filter((d: string) => days.includes(d))), p.id)),
-        ]);
+        const all = await allowedDays(env, tid);
+        let done = false;
+        for (let attempt = 0; attempt < 3 && !done; attempt++) {
+          const cur = await env.DB.prepare("SELECT days FROM families WHERE id = ?").bind(fid).first<any>();
+          const was: string[] = JSON.parse(cur.days);
+          const days = b.day != null
+            ? cleanDays(b.on ? [...was, b.day] : was.filter(d => d !== b.day), all)
+            : cleanDays(b.days, all);
+          const { results: ppl } = await env.DB.prepare("SELECT * FROM people WHERE family_id = ? AND own_days = 0").bind(fid).all<any>();
+          const res = await env.DB.batch([
+            env.DB.prepare(`UPDATE families SET days = ? WHERE id = ? AND days = ? AND ${OPEN}`).bind(JSON.stringify(days), fid, cur.days, tid),
+            ...ppl.map(p => env.DB.prepare(`UPDATE people SET days = ?, fencing_days = ? WHERE id = ? AND own_days = 0 AND (SELECT days FROM families WHERE id = ?) = ?`)
+              .bind(JSON.stringify(days), JSON.stringify(JSON.parse(p.fencing_days).filter((d: string) => days.includes(d))), p.id, fid, JSON.stringify(days))),
+          ]);
+          done = !!res[0].meta.changes;
+        }
+        if (!done) throw new HttpError(409, "Someone else is changing this family's days. Try again.");
         await log(env, tid, name, `set the ${f.name} family's days`);
       }
       return json({ ok: true });
@@ -525,8 +563,9 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const fencer = !!b.is_fencer;
     // A new fencer starts fencing every day they're there; it's one tap to take days off.
     const fencing = !fencer ? [] : b.fencing_days == null ? days : cleanDays(b.fencing_days, all).filter((d: string) => days.includes(d));
-    const r = await env.DB.prepare("INSERT INTO people (family_id, name, is_fencer, days, fencing_days, own_days) VALUES (?, ?, ?, ?, ?, ?) RETURNING id")
-      .bind(fid, str(b.name), fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(fencing), own ? 1 : 0).first<any>();
+    const r = await env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, fencing_days, own_days) SELECT ?, ?, ?, ?, ?, ? WHERE ${OPEN} RETURNING id`)
+      .bind(fid, str(b.name), fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(fencing), own ? 1 : 0, tid).first<any>();
+    if (!r) throw closed();
     await log(env, tid, name, `added ${str(b.name)}${fencer ? " (fencer)" : ""}`);
     return json({ id: r.id }, 201);
   }
@@ -538,19 +577,25 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (method === "PATCH") {
       const b = await body(req);
       const all = await allowedDays(env, p.tournament_id);
-      const own = b.own_days == null ? !!p.own_days : !!b.own_days;
-      // Back to family days, or own days as given (or as they were).
-      const days: string[] = !own ? JSON.parse(p.family_days) : b.days == null ? JSON.parse(p.days) : cleanDays(b.days, all);
+      const flip = (list: string[], d: string, on: boolean) => on ? [...list, d] : list.filter(x => x !== d);
+      const own = b.own_day != null ? true : b.own_days == null ? !!p.own_days : !!b.own_days;
+      // Back to family days, own days as given or changed one at a time, or as they were.
+      const days: string[] = !own ? JSON.parse(p.family_days)
+        : b.own_day != null ? cleanDays(flip(JSON.parse(p.days), b.own_day, !!b.on), all)
+        : b.days == null ? JSON.parse(p.days) : cleanDays(b.days, all);
       const fencer = b.is_fencer == null ? !!p.is_fencer : !!b.is_fencer;
       const wasFencing: string[] = JSON.parse(p.fencing_days);
-      const fencing = !fencer ? [] : (b.fencing_days == null ? (!p.is_fencer ? days : wasFencing) : cleanDays(b.fencing_days, all)).filter(d => days.includes(d));
-      await env.DB.prepare("UPDATE people SET name = ?, is_fencer = ?, days = ?, fencing_days = ?, own_days = ? WHERE id = ?").bind(
-        str(b.name) || p.name, fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(fencing), own ? 1 : 0, pid).run();
+      const fencing = !fencer ? [] : (b.fencing_day != null ? cleanDays(flip(wasFencing, b.fencing_day, !!b.on), all)
+        : b.fencing_days == null ? (!p.is_fencer ? days : wasFencing) : cleanDays(b.fencing_days, all)).filter(d => days.includes(d));
+      const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?, days = ?, fencing_days = ?, own_days = ? WHERE id = ? AND days = ? AND fencing_days = ? AND ${OPEN}`).bind(
+        str(b.name) || p.name, fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(fencing), own ? 1 : 0, pid, p.days, p.fencing_days, p.tournament_id).run();
+      if (!u.meta.changes) throw new HttpError(409, "That changed on another phone a moment ago. Reload and try again.");
       await log(env, p.tournament_id, name, `updated ${str(b.name) || p.name}`);
       return json({ ok: true });
     }
     if (method === "DELETE") {
-      await env.DB.prepare("DELETE FROM people WHERE id = ?").bind(pid).run();
+      const d = await env.DB.prepare(`DELETE FROM people WHERE id = ? AND ${OPEN}`).bind(pid, p.tournament_id).run();
+      if (!d.meta.changes) throw closed();
       await log(env, p.tournament_id, name, `removed ${p.name}`);
       return json({ ok: true });
     }
@@ -563,8 +608,9 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const e = await expenseInput(env, tid, await body(req));
     const r = await env.DB.prepare(
       `INSERT INTO expenses (tournament_id, description, vendor, date, category, basis, amount_cents, paid_by, split, receipt_key, receipt_type, created_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`)
-      .bind(tid, e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name).first<any>();
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${OPEN} RETURNING id`)
+      .bind(tid, e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, tid).first<any>();
+    if (!r) throw closed();
     await log(env, tid, name, `added ${e.description}, $${(e.amount_cents / 100).toFixed(2)}`);
     return json({ id: r.id }, 201);
   }
@@ -575,16 +621,18 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     await openTournament(env, old.tournament_id);
     if (method === "PATCH") {
       const e = await expenseInput(env, old.tournament_id, await body(req));
-      await env.DB.prepare(
+      const u = await env.DB.prepare(
         `UPDATE expenses SET description = ?, vendor = ?, date = ?, category = ?, basis = ?, amount_cents = ?, paid_by = ?, split = ?,
-         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ? WHERE id = ?`)
-        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id).run();
+         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ? WHERE id = ? AND ${OPEN}`)
+        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id, old.tournament_id).run();
+      if (!u.meta.changes) throw closed();
       if (old.receipt_key !== e.receipt_key) await dropReceipt(env, old.receipt_key);
       await log(env, old.tournament_id, name, `edited ${e.description}`);
       return json({ ok: true });
     }
     if (method === "DELETE") {
-      await env.DB.prepare("DELETE FROM expenses WHERE id = ?").bind(id).run();
+      const d = await env.DB.prepare(`DELETE FROM expenses WHERE id = ? AND ${OPEN}`).bind(id, old.tournament_id).run();
+      if (!d.meta.changes) throw closed();
       await dropReceipt(env, old.receipt_key);
       await log(env, old.tournament_id, name, `deleted ${old.description}, $${(old.amount_cents / 100).toFixed(2)}`);
       return json({ ok: true });
