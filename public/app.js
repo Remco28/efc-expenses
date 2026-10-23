@@ -814,7 +814,7 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
     if (newName && document.getElementById("newname")) document.getElementById("newname").value = newName;
     if (fencerTicked != null && document.getElementById("newfencer")) document.getElementById("newfencer").checked = fencerTicked;
     // A failed save already said why in a toast; the redraw shows what really stuck.
-    if (st()) { st().textContent = failed ? "" : `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
+    if (st()) { st().textContent = failed ? "" : `✓ ${typeof msg === "function" ? msg() : msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
    } catch (e) { console.error(e); if (st()) st().textContent = ""; }     // a failed reload must not block later saves
   });
   return famQueue;
@@ -856,7 +856,9 @@ function wireFamily(f) {
     document.getElementById("newname").value = "";
     const fencer = document.getElementById("newfencer").checked;
     let failed = false;
-    await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: fencer } }).catch(e => { failed = true; throw e; }), `${n} added`);
+    let already = false;
+    await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: fencer } }).then(r => { already = !!r.already; return r; }).catch(e => { failed = true; throw e; }),
+      () => already ? `${n} was already added (an earlier try went through)` : `${n} added`);
     // The reply was lost, but the screen has reloaded: if they're there, it worked.
     const slot = addSlot(`/families/${fid}/people`, { name: n, is_fencer: fencer });
     const k = failed && pendingAddKey(slot);
@@ -1513,9 +1515,9 @@ app.addEventListener("click", async ev => {
         save(myKey(), null); S.lastTab = null;
         location.hash = `#/t/${t.id}`; return refresh("expenses");
       case "finalize": {
-        const seenAct = Math.max(0, ...S.trip.activity.map(a => a.id));    // as this screen showed it, before the sheet
+        const seenAct = Math.max(0, ...S.trip.activity.map(a => a.id)), seenFp = S.trip.fingerprint;    // as this screen showed it, before the sheet
         if (!(await confirmSheet("Finalize this trip?", `Expenses lock, and everyone settles through ${esc(t.treasurer_name)}. You can reopen it later if something was missed.`, "Finalize"))) return;
-        await act(() => api(`/tournaments/${t.id}/finalize`, { method: "POST", body: { seen_activity: seenAct } }), "Trip finalized");
+        await act(() => api(`/tournaments/${t.id}/finalize`, { method: "POST", body: { seen_activity: seenAct, seen_fingerprint: seenFp } }), "Trip finalized");
         await refresh("settle");
         if (await confirmSheet("Let everyone know", "Copy the list of who pays what, then paste it into the team chat.", "Copy payment list", false)) copy(finalMessage(S.trip.tournament));
         return;

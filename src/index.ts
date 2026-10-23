@@ -377,7 +377,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   }
   if ((m = path.match(/^\/tournaments\/(\d+)$/))) {
     const tid = Number(m[1]);
-    if (method === "GET") return json(await loadTrip(env, tid));
+    // The fingerprint of the numbers this screen shows: finalize locks only those.
+    if (method === "GET") { const [trip, fp] = await Promise.all([loadTrip(env, tid), fingerprint(env, tid)]); return json({ ...trip, fingerprint: fp }); }
     if (method === "PATCH") {
       const t = await openTournament(env, tid);
       const b = await body(req);
@@ -424,15 +425,20 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     await openTournament(env, tid);
     // Finalize the numbers the person was looking at: if anything changed on the trip
     // since their screen loaded, they look again first.
-    const seen = Number((await body(req).catch(() => ({}))).seen_activity);
+    const b = await body(req).catch(() => ({}));
+    const seen = Number(b.seen_activity);
     if (!Number.isInteger(seen)) throw stale();
     const last = await env.DB.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM activity WHERE tournament_id = ?").bind(tid).first<any>();
     if (last.n > seen) throw new HttpError(409, "Something on this trip changed since your screen loaded. Look over the numbers, then finalize again.");
+    const seenFp = typeof b.seen_fingerprint === "string" ? b.seen_fingerprint : null;
     // Payments are worked out from a snapshot, then written in one all-or-nothing
     // batch that only applies if the trip is still open and nothing that affects
     // the money changed since the snapshot (two finalizes, or a save landing in
     // between, can't leave payments that disagree with the expenses).
     const snap = await fingerprint(env, tid);
+    // The numbers themselves, as the screen showed them: a change whose activity line
+    // isn't written yet is still caught. (A screen from before this check sends none.)
+    if (seenFp != null && seenFp !== snap) throw new HttpError(409, "Something on this trip changed since your screen loaded. Look over the numbers, then finalize again.");
     const trip = await loadTrip(env, tid);
     if ((await fingerprint(env, tid)) !== snap) throw new HttpError(409, "Someone changed the trip while you were finalizing. Check it and finalize again.");
     const t = trip.tournament;                       // read inside the snapshot, treasurer included

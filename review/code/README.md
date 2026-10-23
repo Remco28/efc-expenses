@@ -393,3 +393,22 @@ Checks: every API script (round10.mjs gained the fencing cases; round9.mjs's pic
 1. A rule applied on the path where the bug was found, and not on the other paths that change the same data (row 2; also round 9's row 9).
 2. Cutting something from a design while building, without changing the design.
 3. Storing a list trimmed to another list, so an undo can't get back what the trim threw away (row 1).
+
+### The disposition audit of round 10, and our response
+
+Report: round10/disposition-auditor-sonnet.md. Its main point holds: **the "finalize locks numbers the treasurer hadn't seen" class was rated LOW twice (rows 11, 12), one round after we rated the same class HIGH (round 9 row 7)**, and row 12's reason was false. Finalize's fingerprint was compared with itself on the server, never with what the screen showed, so a change committed but not yet logged was locked unseen.
+
+| Row | Was | Now | Why |
+|---|---|---|---|
+| 2 (own-day fencing) | MEDIUM | HIGH | The same silent wrong share as row 1; "a path few people use" was asserted, not shown |
+| 9 (identical add answered "already") | LOW | MEDIUM | The screen said "Alex added" over an add that was discarded, the class of round 9 row 1; visible in the list, so not HIGH |
+| 11 (finalize reads the screen after the sheet) | LOW | MEDIUM | The class of round 9 row 7, on a realistic trigger (the treasurer's own waiting expense); already fixed |
+| 12 (finalize misses an unlogged change) | LOW | MEDIUM | "Wrong only in a rare timing" is the scale's MEDIUM, and the reason given was false |
+
+Fixed after the audit: the trip screen now carries the fingerprint of the numbers it shows, and finalize refuses unless the trip's numbers still match it (round10.mjs: an expense added after the screen loaded is refused even with the newest activity), which closes rows 11 and 12 by the numbers themselves rather than by the activity log; adding a person whose earlier try went through now says "was already added (an earlier try went through)".
+
+Row 3 stays open for Frank, now with the option the audit named: when a family is added to a trip that already has expenses, ask for its days before it counts.
+
+Also accepted: most rows copied the reviewer's rating; and the table doesn't say how each finding was checked before fixing. Rows 1 and 2 were reproduced by their readers and by round10.mjs; rows 4, 5 by the browser checks (after the fix); rows 7, 8, 10, 11 were read in the code and not reproduced before fixing.
+
+**So round 10 had two HIGH findings (rows 1, 2), and a round 11 follows.**

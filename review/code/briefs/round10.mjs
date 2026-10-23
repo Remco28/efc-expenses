@@ -73,3 +73,14 @@ ok(r.s === 404 && r.d.route !== "unknown", "a missing trip is a refusal, not an 
   await call(`/people/${pick}`, "PATCH", { is_fencer: false }); await call(`/people/${pick}`, "PATCH", { is_fencer: true });
   ok(await fd(pick) === D3[0], "re-ticking Fencer brings back the picks");
 }
+// finalize locks only the numbers the screen showed, even if an activity line is missing
+{
+  const t4 = (await call("/tournaments", "POST", { name: "Fp", start_date: "2028-07-01", end_date: "2028-07-01" })).d.id;
+  const H = (await call(`/tournaments/${t4}/families`, "POST", { name: "Hart" })).d.id; await call(`/families/${H}/people`, "POST", { name: "h" });
+  await call(`/tournaments/${t4}/treasurer`, "PUT", { treasurer_name: "T", treasurer_family_id: H });
+  const fp = (await get(t4)).fingerprint;
+  await call(`/tournaments/${t4}/expenses`, "POST", { description: "Late", category: "meal", basis: "person", amount_cents: 900, paid_by: H, split: {} });
+  const act = Math.max(0, ...(await get(t4)).activity.map(a => a.id));
+  ok((await raw(`/tournaments/${t4}/finalize`, "POST", { seen_activity: act, seen_fingerprint: fp })).s === 409, "finalize with the numbers from before an expense is refused, even with the newest activity");
+  ok((await raw(`/tournaments/${t4}/finalize`, "POST", { seen_activity: act, seen_fingerprint: (await get(t4)).fingerprint })).s === 200, "with the numbers as they are, it finalizes");
+}
