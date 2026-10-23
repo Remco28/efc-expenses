@@ -18,10 +18,9 @@ const pk = crypto.randomUUID(), ava = (await call(`/families/${A}/people`, "POST
 ok((await call(`/families/${A}/people`, "POST", { name: "Ava", is_fencer: true, client_key: pk })).d.id === ava && (await get(t)).families[0].people.length === 1, "a new person sent twice is added once");
 const k = crypto.randomUUID(), ex = { description: "Lunch", category: "meal", basis: "person", amount_cents: 2000, paid_by: A, split: {}, client_key: k };
 const e = (await call(`/tournaments/${t}/expenses`, "POST", ex)).d.id;
-ok((await call(`/tournaments/${t}/expenses`, "POST", { ...ex, amount_cents: 6500 })).s === 200 && (await get(t)).expenses.find(x => x.id === e).amount_cents === 6500, "a retried new expense with a correction applies the correction ($20 -> $65)");
-const now = (await get(t)).expenses.find(x => x.id === e);
-await call(`/expenses/${e}`, "PATCH", { ...ex, client_key: undefined, amount_cents: 7000, rev: now.rev, created_at: now.created_at });
-ok((await call(`/tournaments/${t}/expenses`, "POST", { ...ex, amount_cents: 9900 })).s === 409 && (await get(t)).expenses.find(x => x.id === e).amount_cents === 7000, "but not over someone else's edit made since");
+// (since the saving design: a resent key never changes anything, it says "already added" and whether this copy matches)
+const re = await call(`/tournaments/${t}/expenses`, "POST", { ...ex, amount_cents: 6500 });
+ok(re.s === 200 && re.d.id === e && re.d.already && re.d.same === false && (await get(t)).expenses.find(x => x.id === e).amount_cents === 2000, "a resent key with different content is answered already-added, not same, and changes nothing");
 // 2. adding a day to a family: a fencer fencing every day fences the new one; one with picked days doesn't
 const t2 = (await call("/tournaments", "POST", { name: "R9 days", start_date: D[0], end_date: D[2] })).d.id;
 const F = (await call(`/tournaments/${t2}/families`, "POST", { name: "Fox" })).d.id;

@@ -54,24 +54,37 @@ function toast(msg) {
 }
 
 class AuthError extends Error {}
-// Adding a person, family or trip: one key per thing being added, kept for this tab
-// until the server answers, so a retry after a lost reply (even with a typo fixed, or
-// after a reload) reaches the first one instead of adding a second.
-const ADDS = "efc-add-keys", ADD_TTL = 10 * 60000;
-function addKeys() { try { return JSON.parse(sessionStorage.getItem(ADDS)) || {}; } catch { return {}; } }
-function setAddKeys(m) { try { sessionStorage.setItem(ADDS, JSON.stringify(m)); } catch {} }
-function addKeyFor(path) {
-  const m = addKeys(), k = m[path];
+// Adding a person, family or trip: a key names one thing being added (this path, these
+// exact words), and is kept on the phone until the server really answers. Retrying "Ava"
+// reaches the first Ava; "Ben" is a new key. The server never changes anything for a key
+// it has seen, it only says it's already added.
+const ADDS = "efc-add-keys", ADD_TTL = 864e5;
+function addKeys() { try { return JSON.parse(localStorage.getItem(ADDS)) || {}; } catch { return {}; } }
+function setAddKeys(m) { try { localStorage.setItem(ADDS, JSON.stringify(m)); } catch {} }
+const addSlot = (path, body) => path + " " + JSON.stringify(body);
+function addKeyFor(slot) {
+  const m = addKeys(), k = m[slot];
   if (k && Date.now() - k.at < ADD_TTL) return k.key;
-  m[path] = { key: crypto.randomUUID(), at: Date.now() }; setAddKeys(m); return m[path].key;
+  for (const [s, v] of Object.entries(m)) if (Date.now() - v.at >= ADD_TTL) delete m[s];
+  m[slot] = { key: crypto.randomUUID(), at: Date.now() }; setAddKeys(m); return m[slot].key;
 }
-const pendingAddKey = path => { const k = addKeys()[path]; return k && Date.now() - k.at < ADD_TTL ? k.key : null; };
-function forgetAddKey(path) { const m = addKeys(); delete m[path]; setAddKeys(m); }
+const pendingAddKey = slot => { const k = addKeys()[slot]; return k && Date.now() - k.at < ADD_TTL ? k.key : null; };
+function forgetAddKey(slot) { const m = addKeys(); delete m[slot]; setAddKeys(m); }
+
+// No answer from the app itself (no reply, a cut-off one, a wifi sign-in page, a server
+// crash, "too many requests", a page this server doesn't have): it may or may not have
+// happened. Only the app's own JSON counts as an answer.
+const unsure = reads => Object.assign(new Error(reads ? "No connection. Check your signal and try again."
+  : "The connection dropped before the app heard back, so this may or may not have saved. Check before trying again."), { unsure: true });
+
+// The name shown next to a change: with "(Coach)" for staff on this trip.
+function whoNow() {
+  const me = S.trip && S.trip.families.find(f => f.id === Number(load(`efc-fam-${S.trip.tournament.id}`)));
+  return me?.kind === "staff" && S.name ? `${S.name} (${me.role || "Coach"})` : S.name;
+}
 
 async function api(path, opts = {}) {
-  const me = S.trip && S.trip.families.find(f => f.id === Number(load(`efc-fam-${S.trip.tournament.id}`)));
-  const who = me?.kind === "staff" && S.name ? `${S.name} (${me.role || "Coach"})` : S.name;
-  const headers = { "x-user-name": encodeURIComponent(who || ""), ...(opts.headers || {}) };
+  const headers = { "x-user-name": encodeURIComponent(opts.who ?? whoNow() ?? ""), ...(opts.headers || {}) };
   let body = opts.body;
   // Family and person ids can be reused after a delete, so every change to one also
   // names, by its tag, the record this screen is showing.
@@ -82,20 +95,26 @@ async function api(path, opts = {}) {
     if (r?.uid) body = { ...(body || {}), uid: r.uid };
   }
   const adds = opts.method === "POST" && /^\/(tournaments|tournaments\/\d+\/families|families\/\d+\/people)$/.test(path) && body && !(body instanceof Blob);
-  if (adds) body = { ...body, client_key: addKeyFor(path) };
+  const slot = adds && addSlot(path, opts.body);   // what they typed, before the tag is added
+  if (adds) body = { ...body, client_key: addKeyFor(slot) };
   if (body && !(body instanceof Blob)) { headers["content-type"] = "application/json"; body = JSON.stringify(body); }
   // A request on a dead signal can hang for minutes: give up after a while and say so.
   // A change whose reply never came may still have been saved, so say that too.
   const reads = !opts.method || opts.method === "GET";
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), opts.body instanceof Blob ? 90000 : 25000);
   let res;
-  try { res = await fetch("/api" + path, { method: opts.method || "GET", headers, body, credentials: "same-origin", signal: ctl.signal }); }
-  catch { throw new Error(reads ? "No connection. Check your signal and try again." : "The connection dropped before the app heard back, so this may or may not have saved. Check before trying again."); }
+  let data;
+  try {
+    res = await fetch("/api" + path, { method: opts.method || "GET", headers, body, credentials: "same-origin", signal: ctl.signal });
+    data = res.headers.get("content-type")?.includes("json") ? await res.json() : null;
+  } catch { throw unsure(reads); }
   finally { clearTimeout(timer); }
-  if (adds) forgetAddKey(path);         // the server answered: whatever it said, there's no doubt left
-  const data = res.headers.get("content-type")?.includes("json") ? await res.json() : null;
   if (res.status === 401 && path !== "/login") throw new AuthError();
-  if (!res.ok) throw Object.assign(new Error(data?.error || `Something went wrong (${res.status})`), { status: res.status });
+  const answered = data && typeof data === "object" && (res.ok ? true : typeof data.error === "string")
+    && res.status < 500 && res.status !== 429 && data.route !== "unknown";
+  if (!answered) throw unsure(reads);
+  if (adds) forgetAddKey(slot);         // the server answered: whatever it said, there's no doubt left
+  if (!res.ok) throw Object.assign(new Error(data.error), { status: res.status });
   return data;
 }
 
@@ -199,6 +218,7 @@ document.addEventListener("visibilitychange", () => {
   // Leaving for another app: a field still being typed in saves now (some phones never
   // fire its change otherwise), and the expense draft is kept.
   if (document.hidden) { keepDraft(); if (document.activeElement?.matches?.("#fam-name, #fam-pay, #st-name, #st-role, [data-pname]")) document.activeElement.blur(); return; }
+  sendWaiting();
   if (S.draft || document.querySelector(".sheet-back, .tour-back")) return;
   // Family and staff screens save field by field; don't reload under someone's typing.
   if (/^#\/t\/\d+\/f\//.test(location.hash) || document.activeElement?.matches?.("input, textarea, select")) return;
@@ -252,6 +272,14 @@ async function show() {
   } catch (e) {
     if (stale()) return;                    // an abandoned page's error isn't news
     if (e instanceof AuthError) return renderLogin();
+    // No signal on a trip's main screen: show it as last loaded, so what's waiting to
+    // send can be seen. Anything that changes it still needs a signal, and says so.
+    if (e.unsure && parts[0] === "t" && !parts[2] && S.trip?.tournament.id === Number(parts[1])) {
+      const tab = q.get("tab");
+      renderTrip(["expenses", "families", "settle", "treasurer"].includes(tab) ? tab : "expenses");
+      if (!document.getElementById("toast").classList.contains("show")) toast("No signal. This is the trip as it was last loaded.");
+      return;
+    }
     app.innerHTML = `${bar({ title: "EFC Trip Expenses" })}<div class="wrap"><div class="card empty"><b>Couldn't load this page</b>${esc(e.message)}<div class="row-actions"><a class="btn btn-ghost" href="#/">Back to all trips</a></div></div></div>`;
   }
 }
@@ -329,6 +357,7 @@ function renderHome() {
       <div class="head" style="margin-bottom:4px"><h2>${esc(t.name)}</h2>${icon("chev")}</div>
       <div class="muted small">${esc(range(t))}${t.location ? " · " + esc(t.location) : ""}</div>
       <div class="head" style="margin:10px 0 0"><span class="faint small">${plural(t.expense_count, "expense", "expenses")} · <span class="num">${money(t.total_cents)}</span></span>${tripStatus(t)}</div>
+      ${waiting(t.id).length ? `<div class="owe small" style="margin-top:6px">${plural(waiting(t.id).length, "expense", "expenses")} on this phone, not sent yet</div>` : ""}
     </a>`).join("");
   app.innerHTML = `${bar({ title: "EFC Trip Expenses", sub: "Team travel costs", right: `<button class="who-btn" data-act="rename" title="Change your name">${esc(S.name)}</button>` })}
     <div class="wrap"><div class="stack">
@@ -476,11 +505,9 @@ document.addEventListener("change", ev => {
   renderTrip(tabNow(), '[data-act="pick-me"][data-id=""]');
 });
 
-let pendingNoted = false;
 function renderTrip(tab, focusSel = focusKey()) {
-  const p = settlePending();
-  if (p && !pendingNoted) { pendingNoted = true; setTimeout(() => toast(`Your last expense (${pendingLabel(p)}) may not have saved. Tap Add expense to check it.`), 600); }
   const { tournament: t } = S.trip;
+  settleWaiting();
   const tabs = [["expenses", "Expenses"], ["families", "Families"], ["settle", "Settle up"], ["treasurer", "Treasurer"]]
     .map(([k, l]) => `<a href="#/t/${t.id}?tab=${k}" class="${k === tab ? "on" : ""}" ${k === tab ? 'aria-current="page"' : ""}>${l}</a>`).join("");
   app.innerHTML = `${bar({ back: "#/", title: t.name, sub: `${range(t)}${t.location ? " · " + t.location : ""}`, right: final() ? `<span class="chip gold">Final</span>` : "" })}
@@ -518,8 +545,15 @@ function tabExpenses(el) {
           <div class="rc ${e.receipt_key ? "has" : ""}">${icon(e.receipt_key ? "receipt" : "nore")}${e.receipt_key ? "Receipt" : "No receipt"}</div></div></a>`; }).join("")}`).join("");
   // The treasurer ask lives on the Treasurer tab and in the next-step card, not over the list.
   // Add expense comes first: it floats at the bottom on a phone and sits at the top on a laptop.
+  const wait = waiting(t.id);
+  const since = w => new Date(w.at).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" });
   el.innerHTML = `
     ${final() ? "" : `<a class="btn btn-primary fab" href="#/t/${t.id}/e/new">${icon("plus")} Add expense</a>`}
+    ${wait.length ? `<div class="card waiting"><h2>Waiting to send</h2>
+      <p class="muted small" style="margin-top:-4px">On this phone, not confirmed yet. It may already be on the trip. Sent by itself when there's a signal, and not in the totals until then.</p>
+      ${wait.map(w => `<div class="xrow"><div class="grow"><div class="what">${esc(w.label)}</div>
+        <div class="meta">${w.refused ? `<span class="owe">Couldn't send: ${esc(w.refused)}</span>` : `Waiting since ${esc(since(w))}`}</div></div>
+        <button class="btn-ghost btn-small" data-act="unwait" data-key="${esc(w.key)}">Remove</button></div>`).join("")}</div>` : ""}
     <div class="card ledger">
       <div class="total"><span class="muted">${plural(expenses.length, "shared expense", "shared expenses")}</span><span class="v">${money(total)}</span></div>
       ${expenses.length ? rows : `<div class="empty"><div class="ic">${icon("receipt")}</div><b>Nothing added yet</b>Whoever pays for something shared adds it here, ideally with a photo of the receipt.</div>`}
@@ -822,12 +856,15 @@ function wireFamily(f) {
     let failed = false;
     await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: fencer } }).catch(e => { failed = true; throw e; }), `${n} added`);
     // The reply was lost, but the screen has reloaded: if they're there, it worked.
-    const k = failed && pendingAddKey(`/families/${fid}/people`);
+    const slot = addSlot(`/families/${fid}/people`, { name: n, is_fencer: fencer });
+    const k = failed && pendingAddKey(slot);
     if (k && S.trip.families.some(f => f.people.some(p => p.client_key === k))) {
-      forgetAddKey(`/families/${fid}/people`); toast(`${n} was added after all.`); failed = false;
+      forgetAddKey(slot); toast(`${n} was added after all.`); failed = false;
     }
     // Not added: put back what they typed so they can try again.
     if (failed && onFamily(S.trip.tournament.id, fid) && document.getElementById("newname") && !document.getElementById("newname").value) { document.getElementById("newname").value = n; document.getElementById("newfencer").checked = fencer; }
+    // The screen wasn't redrawn (no signal for the reload): let them try again.
+    if (document.getElementById("addperson") === add) { delete add.dataset.busy; add.querySelector("button").disabled = false; }
     document.getElementById("newname")?.focus();
   };
 }
@@ -871,10 +908,6 @@ function renderEditor(id) {
   if (final()) { if (e) return renderExpenseView(e); location.hash = `#/t/${t.id}`; return; }
   if (id && !e) { location.hash = `#/t/${t.id}`; return; }
   if ((!S.draft || S.draft.id !== (id || 0)) && (S.draft = keptDraft(t.id, id || 0))) toast("Picked up where you left off.");
-  if (!id && !S.draft) {
-    const p = settlePending();
-    if (p) { S.draft = p; dropPending(p.client_key); toast(`Your last expense (${pendingLabel(p)}) may not have saved. It's back here: check it and save.`); }
-  }
   if (!S.draft || S.draft.id !== (id || 0)) {
     const me = myFamily();
     // Families added since this expense was entered count automatically too.
@@ -1077,7 +1110,7 @@ async function uploadReceipt(file, tid) {
   } catch (e) {
     d.uploading = false;
     if (e instanceof AuthError) return renderLogin();
-    if (stillHere()) toast(e.message);
+    if (stillHere()) toast(e.unsure ? "The photo didn't upload. You can save without it, and add it when you have signal." : e.message);
   }
   if (stillHere()) drawReceipt();
 }
@@ -1098,18 +1131,71 @@ function fillFromReceipt(f, d = S.draft) {
   drawSplit();
 }
 
-// A new expense sent without a reply is remembered on this phone until it's settled.
-const PENDING = "efc-pending-expense";
-function keepPending(tid, d) { try { localStorage.setItem(PENDING, JSON.stringify({ trip: tid, d: { ...d, uploading: false } })); } catch {} }
-function readPending(tid) { try { const p = JSON.parse(localStorage.getItem(PENDING)); return p && p.trip === tid ? p.d : null; } catch { return null; } }
-function dropPending(key) { try { const p = JSON.parse(localStorage.getItem(PENDING)); if (p && (!key || p.d.client_key === key)) localStorage.removeItem(PENDING); } catch {} }
-const pendingLabel = d => `${d.description || "expense"}, ${money(cents(d.amount))}`;
-// Did the unconfirmed one land? Say so once, and forget it.
-function settlePending() {
-  const p = S.trip && readPending(S.trip.tournament.id);
-  if (!p || !S.trip.expenses.some(e => e.client_key === p.client_key)) return p;
-  dropPending(p.client_key); toast(`Your last expense (${pendingLabel(p)}) did save.`); return null;
+// ---------- expenses waiting on this phone ----------
+// A new expense saved with no answer from the app waits here, sent by itself when there's
+// a signal. Its key means sending it twice adds it once. One storage entry per expense, so
+// two tabs can't write over each other's. It can be removed, not edited.
+const WAIT = "efc-wait-";
+function waiting(tid) {
+  const out = [];
+  try {
+    const keys = []; for (let i = 0; i < localStorage.length; i++) keys.push(localStorage.key(i));
+    for (const k of keys) if (k?.startsWith(WAIT)) { const w = JSON.parse(localStorage.getItem(k)); if (w && (tid == null || w.trip === tid)) out.push(w); }
+  } catch {}
+  return out.sort((a, b) => a.at - b.at);
 }
+function keepWaiting(w) { try { localStorage.setItem(WAIT + w.key, JSON.stringify(w)); return true; } catch { return false; } }
+const isWaiting = key => { try { return !!localStorage.getItem(WAIT + key); } catch { return false; } };
+function dropWaiting(key) { try { localStorage.removeItem(WAIT + key); } catch {} }
+// The one remembered expense from before this list existed joins it.
+function migratePending() {
+ try {
+  const p = JSON.parse(localStorage.getItem("efc-pending-expense"));
+  if (p?.d?.client_key && cents(p.d.amount) > 0) keepWaiting({ key: p.d.client_key, trip: p.trip, who: S.name, at: Date.now(),
+    label: `${p.d.description || "Expense"}, ${money(cents(p.d.amount))}`,
+    body: { description: p.d.description, vendor: p.d.vendor, date: p.d.date, category: p.d.category, basis: p.d.basis, amount_cents: cents(p.d.amount),
+      paid_by: Number(p.d.paid_by), split: p.d.split, receipt_key: p.d.receipt_key, receipt_type: p.d.receipt_type, client_key: p.d.client_key } });
+  localStorage.removeItem("efc-pending-expense");
+ } catch {}
+}
+
+function holdExpense(t, who, body) {
+  const w = { key: body.client_key, trip: t.id, who, at: Date.now(), label: `${body.description || CATEGORIES[body.category].label}, ${money(body.amount_cents)}`, body };
+  if (!keepWaiting(w)) { toast("No signal, and this phone couldn't keep the expense. Try again when you have signal."); return false; }
+  toast(`No signal. ${w.label} is waiting on this phone and will be sent by itself.`);
+  return true;
+}
+
+// The trip already has it (its reply was lost, and a later send or someone's reload saw it).
+function settleWaiting() {
+  for (const w of waiting(S.trip.tournament.id))
+    if (S.trip.expenses.some(e => e.client_key === w.key)) { dropWaiting(w.key); toast(`${w.label} did save.`); }
+}
+
+let sending = false;
+async function sendWaiting() {
+  if (sending || !S.name) return;
+  sending = true;
+  let changed = false;
+  try {
+    for (const w of waiting()) {
+      if (w.refused || !isWaiting(w.key)) continue;
+      try { await api(`/tournaments/${w.trip}/expenses`, { method: "POST", body: w.body, who: w.who }); }
+      catch (e) {
+        if (e instanceof AuthError) break;          // logged out: wait until they're back in
+        if (e.unsure) continue;                      // still no answer: next time
+        if (isWaiting(w.key)) { keepWaiting({ ...w, refused: e.message }); toast(`${w.label} couldn't be sent: ${e.message}`); changed = true; }
+        continue;
+      }
+      dropWaiting(w.key); toast(`${w.label} was sent.`); changed = true;
+    }
+  } finally { sending = false; }
+  // Show it on the list or the trip it belongs to, without disturbing any other screen.
+  if (!changed) return;
+  if (/^#\/t\/\d+(\?|$)/.test(location.hash) && S.trip) refresh().catch(() => {});
+  else if (!location.hash || location.hash === "#/") show();
+}
+setInterval(() => { if (!document.hidden && waiting().length) sendWaiting(); }, 30000);
 
 // The expense being typed is kept for this browser tab, so a reload doesn't lose it.
 const DRAFT = "efc-draft";
@@ -1128,33 +1214,49 @@ async function saveExpense() {
   if (!d.paid_by) { document.getElementById("paid").scrollIntoView({ block: "center" }); return toast("Pick the family that paid"); }
   const s = shares({ ...d, amount_cents }, S.trip.families);
   if (!s.total) return toast("Include at least one family");
+  const payer = S.trip.families.find(f => f.id === Number(d.paid_by));
+  const body = { description: d.description, vendor: d.vendor, date: d.date, category: d.category, basis: d.basis,
+    amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at, rev: d.rev, client_key: d.client_key,
+    ...(!d.id && payer?.uid && { paid_by_uid: payer.uid }) };
+  // A new expense with automatic shares can wait on the phone for a signal. Shares set by
+  // hand name families by number, and need someone looking at the trip as it is now.
+  const handSet = d.basis === "custom" || Object.values(d.split || {}).some(v => v != null);
+  const canWait = !d.id && !handSet, who = whoNow();
+  const needsSignal = "This one needs a signal, because its shares were set by hand. Save again when you have signal; it can't be added twice.";
   // A family added or removed on another phone since the form opened would be charged
   // or dropped without this form showing it: catch up, show it, and let them check.
-  let fresh; try { fresh = await api(`/tournaments/${t.id}`); } catch (e) { return toast(e.message); }
+  let fresh;
+  try { fresh = await api(`/tournaments/${t.id}`); }
+  catch (e) {
+    if (e instanceof AuthError) return renderLogin();
+    if (e.unsure && canWait) { if (holdExpense(t, who, body) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
+    return toast(e.unsure && !d.id ? needsSignal : e.message);
+  }
   // Who's on the trip, and which days: everything the shares on this form were worked out from.
-  const who = tr => JSON.stringify(tr.families.map(f => [f.id, f.kind, f.days, f.people.map(p => [p.id, p.is_fencer, p.days, p.fencing_days])]));
+  const whoIs = tr => JSON.stringify(tr.families.map(f => [f.id, f.kind, f.days, f.people.map(p => [p.id, p.is_fencer, p.days, p.fencing_days])]));
   if (S.draft !== d) return;
-  if (who(fresh) !== who(S.trip)) {
+  if (whoIs(fresh) !== whoIs(S.trip)) {
     S.trip = fresh;
     renderEditor(d.id || null);
     return toast("Who's on the trip changed since you opened this. Check the shares, then save again.");
   }
-  const body = { description: d.description, vendor: d.vendor, date: d.date, category: d.category, basis: d.basis,
-    amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at, rev: d.rev, client_key: d.client_key };
   // The form is frozen while it sends: a change made meanwhile would be thrown away
   // when the save lands. Moving to another screen unfreezes it (see show()).
   const btn = document.getElementById("save"), label = btn.innerHTML;
   btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Saving…`;
   app.inert = true;
-  try { await act(() => d.id ? api(`/expenses/${d.id}`, { method: "PATCH", body }) : api(`/tournaments/${t.id}/expenses`, { method: "POST", body }), "Expense saved"); }
+  let r;
+  try { r = d.id ? await api(`/expenses/${d.id}`, { method: "PATCH", body }) : await api(`/tournaments/${t.id}/expenses`, { method: "POST", body }); }
   catch (e) {
-    // No reply at all (not a refusal): it may have saved. Remember it, so next time the
-    // app can say it did, or offer it again with the same key (which can't add it twice).
-    if (!d.id && e.status == null && !(e instanceof AuthError)) keepPending(t.id, d);
-    if (S.draft === d) { app.inert = false; btn.disabled = false; btn.innerHTML = label; }
-    return;
+    if (e instanceof AuthError) return renderLogin();
+    const here = S.draft === d;
+    if (here) { app.inert = false; btn.disabled = false; btn.innerHTML = label; }
+    // No answer: it may have saved. If it can wait, it waits (even if they've moved on).
+    if (e.unsure && canWait) { if (holdExpense(t, who, body) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
+    return toast(e.unsure && !d.id ? "The connection dropped before the app heard back. " + needsSignal : e.message);
   }
-  dropPending(d.client_key);
+  // A retry of a save that had landed: it's on the trip as first sent.
+  toast(r.already && !r.same ? "Your first save went through as it was then. Open it from the list to change it." : "Expense saved");
   if (S.draft !== d) return;            // they've moved on to something else meanwhile
   S.draft = null; dropDraft();
   location.hash = `#/t/${t.id}`;
@@ -1334,6 +1436,13 @@ app.addEventListener("click", async ev => {
         return;
       }
       case "new-trip": return newTrip();
+      case "unwait": {
+        const w = waiting().find(x => x.key === b.dataset.key); if (!w) return renderTrip(tabNow());
+        const ok = await confirmSheet(`Remove ${esc(w.label)}?`, w.refused ? "It wasn't added to the trip. Removing it takes it off this phone."
+          : "This may already be on the trip. Check the list first. Removing it only takes it off this phone.", "Remove", true);
+        if (ok) { dropWaiting(w.key); renderTrip(tabNow()); }     // nothing on the trip changed: no reload needed
+        return;
+      }
       case "tour": return showTour();
       case "pick-me":
         save(myKey(), b.dataset.id || null);
@@ -1419,4 +1528,5 @@ app.addEventListener("click", async ev => {
   } catch (e) { if (!(e instanceof AuthError)) console.error(e); }
 });
 
-route();
+migratePending();
+route().then(sendWaiting);
