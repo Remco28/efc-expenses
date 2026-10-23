@@ -184,12 +184,14 @@ async function route() {
   }
 }
 
-let routeSeq = 0;
+let routeSeq = 0, lastPath = null;
 async function show() {
   const seq = ++routeSeq;
   const stale = () => seq !== routeSeq;   // they've already moved on
   const h = location.hash.replace(/^#\/?/, "");
   const [path, query] = h.split("?");
+  // A new screen starts at the top; a tab change or a refresh keeps the place.
+  if (path !== lastPath) { lastPath = path; window.scrollTo(0, 0); }
   const parts = path.split("/").filter(Boolean);
   const q = new URLSearchParams(query || "");
   if (!S.name) return renderName();
