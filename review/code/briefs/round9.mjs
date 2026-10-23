@@ -1,0 +1,40 @@
+import { stamp } from "./stamp.mjs";
+const B = "http://127.0.0.1:8817/api";
+const r0 = await fetch(B + "/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "fence-local-test" }) });
+const cookie = r0.headers.get("set-cookie").split(";")[0];
+const raw = async (p, m = "GET", b) => { const r = await fetch(B + p, { method: m, headers: { cookie, "x-user-name": "T", "content-type": "application/json" }, body: b && JSON.stringify(b) }); return { s: r.status, d: await r.json().catch(() => null) }; };
+const call = async (p, m = "GET", b) => raw(p, m, await stamp(B, cookie, p, m, b));
+const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); if (!c) process.exitCode = 1; };
+const get = async t => (await call(`/tournaments/${t}`)).d;
+const D = ["2027-12-04", "2027-12-05", "2027-12-06"];
+// 1. a new expense retried with a correction after a lost reply
+const tk = crypto.randomUUID();
+const t1 = (await call("/tournaments", "POST", { name: "R9", start_date: D[0], end_date: D[1], client_key: tk })).d.id;
+ok((await call("/tournaments", "POST", { name: "R9", start_date: D[0], end_date: D[1], client_key: tk })).d.id === t1, "a new trip sent twice is made once");
+const t = t1;
+const fk = crypto.randomUUID(), A = (await call(`/tournaments/${t}/families`, "POST", { name: "Adams", client_key: fk })).d.id;
+ok((await call(`/tournaments/${t}/families`, "POST", { name: "Adams", client_key: fk })).d.id === A && (await get(t)).families.length === 1, "a new family sent twice is added once");
+const pk = crypto.randomUUID(), ava = (await call(`/families/${A}/people`, "POST", { name: "Ava", is_fencer: true, client_key: pk })).d.id;
+ok((await call(`/families/${A}/people`, "POST", { name: "Ava", is_fencer: true, client_key: pk })).d.id === ava && (await get(t)).families[0].people.length === 1, "a new person sent twice is added once");
+const k = crypto.randomUUID(), ex = { description: "Lunch", category: "meal", basis: "person", amount_cents: 2000, paid_by: A, split: {}, client_key: k };
+const e = (await call(`/tournaments/${t}/expenses`, "POST", ex)).d.id;
+ok((await call(`/tournaments/${t}/expenses`, "POST", { ...ex, amount_cents: 6500 })).s === 200 && (await get(t)).expenses.find(x => x.id === e).amount_cents === 6500, "a retried new expense with a correction applies the correction ($20 -> $65)");
+const now = (await get(t)).expenses.find(x => x.id === e);
+await call(`/expenses/${e}`, "PATCH", { ...ex, client_key: undefined, amount_cents: 7000, rev: now.rev, created_at: now.created_at });
+ok((await call(`/tournaments/${t}/expenses`, "POST", { ...ex, amount_cents: 9900 })).s === 409 && (await get(t)).expenses.find(x => x.id === e).amount_cents === 7000, "but not over someone else's edit made since");
+// 2. adding a day to a family: a fencer fencing every day fences the new one; one with picked days doesn't
+const t2 = (await call("/tournaments", "POST", { name: "R9 days", start_date: D[0], end_date: D[2] })).d.id;
+const F = (await call(`/tournaments/${t2}/families`, "POST", { name: "Fox" })).d.id;
+await call(`/families/${F}`, "PATCH", { day: D[2], on: false });
+const all = (await call(`/families/${F}/people`, "POST", { name: "All", is_fencer: true })).d.id;
+const some = (await call(`/families/${F}/people`, "POST", { name: "Some", is_fencer: true })).d.id;
+await call(`/people/${some}`, "PATCH", { fencing_day: D[1], on: false });
+await call(`/families/${F}`, "PATCH", { day: D[2], on: true });
+const pp = (await get(t2)).families[0].people, P = id => pp.find(p => p.id === id).fencing_days.join();
+ok(P(all) === D.join() && P(some) === [D[0], D[2]].filter(x => x !== D[2]).join(), `adding a day: everyday fencer fences it (${P(all)}); picked-days fencer keeps their pick (${P(some)})`);
+// 3. finalize refuses numbers the screen didn't see
+await call(`/tournaments/${t2}/treasurer`, "PUT", { treasurer_name: "T", treasurer_family_id: F });
+const seen = Math.max(0, ...(await get(t2)).activity.map(a => a.id));
+await call(`/families/${F}`, "PATCH", { pay_notes: "Venmo @fox" });
+ok((await raw(`/tournaments/${t2}/finalize`, "POST", { seen_activity: seen })).s === 409, "finalizing numbers from before a change is refused");
+ok((await call(`/tournaments/${t2}/finalize`, "POST")).s === 200, "finalizing what the screen shows works");

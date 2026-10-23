@@ -232,3 +232,62 @@ The human will recognise these:
 4. Briefs that get longer and name functions each round.
 
 Round 8 found a HIGH, so a round 9 follows.
+
+## Round 9, 2026-10-23 (round 2 of the new method)
+
+Cast: two whole-code reviewers (Sonnet, Haiku), a fix auditor on 4719bbd (Sonnet), a specialist with the lens "a parent at a tournament, on a phone, with a bad signal" (Haiku), and a disposition auditor on round 8's triage (Sonnet). Same brief template; briefs and predictions committed before the run (39ed53d). Reports are in round9/. Harness note: one reviewer found its port taken by our own leftover test servers and its first call hit another copy; it noticed and re-ran on its own. Leftover servers are now stopped after each run.
+
+**No reviewer rated anything HIGH.** Five readers, four of them running it, independently found the same regression in round 8's own fix (row 1).
+
+| # | Finding | Reviewers (their rating) | Ours |
+|---|---|---|---|
+| 1 | A new expense saved, its reply lost, then corrected and saved again: the server answered "saved" and kept the old numbers (a round-8 regression; before, it made a visible duplicate) | All five (MEDIUM); fix auditor, both whole-code reviewers and bad-signal ran it | MEDIUM: a lost reply then a correction is a rare sequence, though the result is silent |
+| 2 | Adding a person or family again after a lost reply made a duplicate (Ava twice: counted twice) | Bad-signal (MEDIUM, ran), Haiku whole-code (MEDIUM, ran) | MEDIUM |
+| 3 | A save that never got a reply froze the form: no time limit, no "Saving…", and "No connection" when it may have saved | Bad-signal (MEDIUM) | MEDIUM |
+| 4 | The expense draft lived only in memory: a phone browser reloading behind the camera lost it | Bad-signal (MEDIUM) | MEDIUM |
+| 5 | The check before saving caught a family joining, but not people or days changed meanwhile | Haiku whole-code (MEDIUM), bad-signal (LOW) | MEDIUM: the same class as round 8 row 4 |
+| 6 | Delete from the editor sent the trip's newest revision, not the editor's, after the round-8 family check redrew the form | Sonnet whole-code (LOW) | MEDIUM: an unseen correction deleted, rare sequence |
+| 7 | Finalize locked in numbers the treasurer hadn't seen | Sonnet whole-code (LOW) | MEDIUM: visible afterwards, recoverable by reopening |
+| 8 | Family and person tags were checked before the write, not in it | Disposition auditor (MEDIUM), fix auditor in round 8 (LOW) | MEDIUM: rare timing; round 8's LOW was the inconsistency the earlier audit named |
+| 9 | Adding a day to a family didn't make its fencers fence it (the mirror of round 8 row 5) | Disposition auditor (MEDIUM), money in round 8 (LOW) | MEDIUM. Fixed by a rule: a fencer who fences every day they're there fences the added day; one with picked days keeps the pick |
+| 10 | Amounts "12,5" and "1.250,00" misread | Fix auditor (LOW), Haiku whole-code (LOW, ran) | LOW: edge-case input for this club (the reason is the input, not that it's visible) |
+| 11 | A retried delete answered 404 and left the editor open | Bad-signal (LOW, ran), Haiku whole-code (LOW) | LOW |
+| 12 | The reopen warning didn't show how many ticks it would clear (round 8's README said it did) | Fix auditor (LOW) | LOW |
+| 13 | Text in a family-screen field not yet left was lost when the phone switched apps | Bad-signal (LOW) | LOW |
+
+Fixed, with migration 0010: a retried new expense with different content is applied if nobody has edited it since, refused otherwise; new people, families and trips carry a retry key (added in api(), keyed on the request's content, dropped after a reply); requests give up after 25 s (90 s for uploads), the Save button shows "Saving…", and a lost reply on a change says it may have saved; the expense draft is kept in the tab's session storage and restored with "Picked up where you left off"; the pre-save check compares families, people, days and fencing days; delete uses the editor's revision and treats a 404 retry as done; finalize names the latest change its screen saw; tags are checked inside every family and person write; the fencer rule above; the amount parser reads decimal commas; the reopen warning counts; leaving for another app saves the field being typed in.
+
+Measured, not guessed (round 8 deferred it to a cost reader): the PDF test-embed adds about 1 ms on a 470 KB, 10-page receipt on a laptop (x1.08). LOW stands.
+
+Still for the human: a family added with no days starts on the whole trip (round 8, design); and whether "stop when no HIGH" should rest on the author's own ratings (the disposition auditor's question, a change to the skill).
+
+Checks: 17 unit tests; every API script in briefs/ (round9.mjs is new; stamp.mjs also names the latest change a finalize saw); browser checks of the kept draft across a reload, "Saving…", adding a person, delete, finalize, and the reopen count.
+
+### The disposition audit of round 8, and our response
+
+Accepted:
+- Row 1 overstated the evidence. Only the Haiku reviewer reproduced attendance being dropped; the Sonnet reviewer reproduced the dates reverting and reasoned the rest. The HIGH rests on one reproduction plus a reasoned second, not two.
+- Rows 7 and C kept the "visible" reasoning the previous audit rejected. Row 7's LOW now rests on edge-case input; C was MEDIUM and is fixed (row 9 above).
+- "Known LOW" for the tag check was the same before-the-write pattern rated inconsistently; fixed (row 8).
+- Deferring the PDF cost to a reader that didn't run was convenient; measured above.
+- Round 8's ratings weren't audited before deciding round 9 was needed. This round's audit is the fix, and round 9's ratings get the same before any decision to stop.
+
+Answered: R6 #7 (created_at optional) is superseded, since every expense change now requires the revision it opened. R3 #15 (migration 0007 on finalized trips) was a one-time migration when no finalized trips existed; a future migration that changes attendance should skip or reopen finalized trips, and that note is here for whoever writes one.
+
+### Predictions, against what happened
+
+- **The bad-signal specialist finds the frozen form: right** (row 3).
+- **HIGH 0: right**, by every reader's rating.
+- **The fix auditor's suspicion was in the wrong place.** I suspected the identical-edit rule; the regression was in the new-expense retry, which I'd predicted as "landed".
+- "Unticking Fencer missed in one place": **wrong**; the fix auditor found every reader of fencing days consistent.
+- MEDIUM 2 to 5: **wrong, 9.** The lens produced a cluster around lost replies, which I didn't foresee.
+- Whole-code reviewers overlap on at most one: **wrong.** They overlapped on two (rows 1 and 2), and five readers overlapped on row 1.
+- Disposition auditor contests 2 to 4 ratings: **about right**, four points, plus one regression it found itself (row 1).
+
+**Believed, and wrong:** "A new expense carries a key from the phone, so a retry finds it" (round 8's fix description). It found it, and then threw away what the retry said.
+
+### Mistakes the next author will make
+
+1. A fix that makes a retry "safe" by ignoring what the retry says. A retry is the same request only if its content is the same.
+2. Writing in the record that a fix does more than it does (the reopen count, row 12).
+3. Leaving test servers running between rounds, so a reviewer's first test hits the wrong copy.

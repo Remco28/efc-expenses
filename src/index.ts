@@ -184,8 +184,13 @@ async function familyIds(env: Env, tid: number) {
   return new Set(results.map(r => r.id as number));
 }
 
+// A key the phone made for something it's adding, so a retry finds the first one.
+const clientKey = (b: any) => typeof b.client_key === "string" && /^[0-9a-f-]{36}$/.test(b.client_key) ? b.client_key as string : null;
 const has = (o: object, k: unknown) => typeof k === "string" && Object.prototype.hasOwnProperty.call(o, k);
 const RECEIPT_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"];
+
+// What makes two saves of an expense the same save.
+const EXPENSE_FIELDS = ["description", "vendor", "date", "category", "basis", "amount_cents", "paid_by", "split", "receipt_key"] as const;
 
 async function expenseInput(env: Env, tid: number, b: any) {
   const ids = await familyIds(env, tid);
@@ -351,9 +356,12 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (!str(b.name)) throw new HttpError(400, "Give the tournament a name");
     if (!isDate(b.start_date) || !isDate(b.end_date) || b.end_date < b.start_date) throw new HttpError(400, "Check the dates");
     if (tripDays(b.start_date, b.end_date) > MAX_TRIP_DAYS) throw new HttpError(400, `A trip can be at most ${MAX_TRIP_DAYS} days`);
+    const key = clientKey(b);
+    const made = key && await env.DB.prepare("SELECT id FROM tournaments WHERE client_key = ?").bind(key).first<any>();
+    if (made) return json({ id: made.id }, 200);
     const r = await env.DB.prepare(
-      "INSERT INTO tournaments (name, location, start_date, end_date, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?) RETURNING id")
-      .bind(str(b.name), str(b.location), b.start_date, b.end_date, now(), name).first<any>();
+      "INSERT INTO tournaments (name, location, start_date, end_date, created_at, created_by, client_key) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id")
+      .bind(str(b.name), str(b.location), b.start_date, b.end_date, now(), name, key).first<any>();
     await log(env, r.id, name, `created the tournament`);
     return json({ id: r.id }, 201);
   }
@@ -404,6 +412,12 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   if ((m = path.match(/^\/tournaments\/(\d+)\/finalize$/)) && method === "POST") {
     const tid = Number(m[1]);
     await openTournament(env, tid);
+    // Finalize the numbers the person was looking at: if anything changed on the trip
+    // since their screen loaded, they look again first.
+    const seen = Number((await body(req).catch(() => ({}))).seen_activity);
+    if (!Number.isInteger(seen)) throw stale();
+    const last = await env.DB.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM activity WHERE tournament_id = ?").bind(tid).first<any>();
+    if (last.n > seen) throw new HttpError(409, "Something on this trip changed since your screen loaded. Look over the numbers, then finalize again.");
     // Payments are worked out from a snapshot, then written in one all-or-nothing
     // batch that only applies if the trip is still open and nothing that affects
     // the money changed since the snapshot (two finalizes, or a save landing in
@@ -513,8 +527,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (!str(b.name)) throw new HttpError(400, staff ? "Give their name" : "Give the family a name");
     const all = await allowedDays(env, tid);
     const days = staff ? [] : b.days == null ? [...all].sort() : cleanDays(b.days, all);
-    const r = await env.DB.prepare(`INSERT INTO families (tournament_id, name, days, kind, role, pay_notes) SELECT ?, ?, ?, ?, ?, ? WHERE ${OPEN} AND ${SAME_SPAN} RETURNING id`)
-      .bind(tid, str(b.name), JSON.stringify(days), staff ? "staff" : "family", staff ? str(b.role, 40) || "Coach" : "", str(b.pay_notes, 300), tid, tid, all.span).first<any>();
+    const key = clientKey(b);
+    const made = key && await env.DB.prepare("SELECT id FROM families WHERE client_key = ? AND tournament_id = ?").bind(key, tid).first<any>();
+    if (made) return json({ id: made.id }, 200);
+    const r = await env.DB.prepare(`INSERT INTO families (tournament_id, name, days, kind, role, pay_notes, client_key) SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${OPEN} AND ${SAME_SPAN} RETURNING id`)
+      .bind(tid, str(b.name), JSON.stringify(days), staff ? "staff" : "family", staff ? str(b.role, 40) || "Coach" : "", str(b.pay_notes, 300), key, tid, tid, all.span).first<any>();
     if (!r) throw closed();
     if (staff) {
       await log(env, tid, name, `added ${str(b.role, 40) || "Coach"} ${str(b.name)} to coaches & staff`);
@@ -535,16 +552,16 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (method === "PATCH") {
       if (b.pay_notes != null && str(b.pay_notes, 300) !== f.pay_notes) {
         // How to pay this family; editable after finalizing, since that's when it's needed.
-        await env.DB.prepare("UPDATE families SET pay_notes = ? WHERE id = ?").bind(str(b.pay_notes, 300), fid).run();
+        await env.DB.prepare("UPDATE families SET pay_notes = ? WHERE id = ? AND uid = ?").bind(str(b.pay_notes, 300), fid, f.uid).run();
         await log(env, tid, name, `updated how to pay the ${f.name} family`);
       }
       if (b.role != null && f.kind === "staff" && str(b.role, 40) !== f.role) {
-        await env.DB.prepare("UPDATE families SET role = ? WHERE id = ?").bind(str(b.role, 40) || "Coach", fid).run();
+        await env.DB.prepare("UPDATE families SET role = ? WHERE id = ? AND uid = ?").bind(str(b.role, 40) || "Coach", fid, f.uid).run();
       }
       if (b.name != null && str(b.name) !== f.name) {
         await openTournament(env, tid);
         if (!str(b.name)) throw new HttpError(400, "Give the family a name");
-        await env.DB.prepare(`UPDATE families SET name = ? WHERE id = ? AND ${OPEN}`).bind(str(b.name), fid, tid).run();
+        await env.DB.prepare(`UPDATE families SET name = ? WHERE id = ? AND uid = ? AND ${OPEN}`).bind(str(b.name), fid, f.uid, tid).run();
         await log(env, tid, name, `renamed the ${f.name} family to ${str(b.name)}`);
       }
       if (b.days != null || b.day != null) {
@@ -560,8 +577,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
           // People who follow the family get its days; their fencing days are trimmed
           // as they stand now, so a fencing tap landing meanwhile isn't undone.
           const res = await env.DB.batch([
-            env.DB.prepare(`UPDATE families SET days = ? WHERE id = ? AND days = ? AND ${OPEN} AND ${SAME_SPAN}`).bind(JSON.stringify(days), fid, cur.days, tid, tid, all.span),
-            env.DB.prepare(`UPDATE people SET days = ?1, fencing_days = (SELECT json_group_array(j.value) FROM json_each(people.fencing_days) j WHERE j.value IN (SELECT value FROM json_each(?1)))
+            env.DB.prepare(`UPDATE families SET days = ? WHERE id = ? AND uid = ? AND days = ? AND ${OPEN} AND ${SAME_SPAN}`).bind(JSON.stringify(days), fid, f.uid, cur.days, tid, tid, all.span),
+            // A fencer who fences every day they're there keeps doing so on a day added.
+            env.DB.prepare(`UPDATE people SET days = ?1, fencing_days = CASE WHEN people.is_fencer = 1 AND people.fencing_days = people.days THEN ?1
+                ELSE (SELECT json_group_array(j.value) FROM json_each(people.fencing_days) j WHERE j.value IN (SELECT value FROM json_each(?1))) END
               WHERE family_id = ?2 AND own_days = 0 AND (SELECT days FROM families WHERE id = ?2) = ?1 AND ${OPEN3}`).bind(JSON.stringify(days), fid, tid),
           ]);
           done = !!res[0].meta.changes;
@@ -576,11 +595,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const paid = await env.DB.prepare("SELECT COUNT(*) AS n FROM expenses WHERE paid_by = ?").bind(fid).first<any>();
       if (paid.n > 0) throw new HttpError(409, "This family paid for an expense. Change who paid first.");
       // Each expense's split loses this family as it stands now, so an edit landing meanwhile is kept.
-      const can = `NOT EXISTS (SELECT 1 FROM expenses WHERE paid_by = ?1) AND ${OPEN3}`;
+      const can = `NOT EXISTS (SELECT 1 FROM expenses WHERE paid_by = ?1) AND ${OPEN3} AND (SELECT uid FROM families WHERE id = ?1) = ?4`;
       const res = await env.DB.batch([
         // ?2 is the family id as text: the JSON key, not a number.
-        env.DB.prepare(`UPDATE expenses SET split = json_remove(split, '$."' || ?2 || '"'), rev = rev + 1 WHERE tournament_id = ?3 AND json_type(split, '$."' || ?2 || '"') IS NOT NULL AND ${can}`).bind(fid, String(fid), tid),
-        env.DB.prepare(`DELETE FROM families WHERE id = ?1 AND ${can}`).bind(fid, null, tid),
+        env.DB.prepare(`UPDATE expenses SET split = json_remove(split, '$."' || ?2 || '"'), rev = rev + 1 WHERE tournament_id = ?3 AND json_type(split, '$."' || ?2 || '"') IS NOT NULL AND ${can}`).bind(fid, String(fid), tid, f.uid),
+        env.DB.prepare(`DELETE FROM families WHERE id = ?1 AND ${can}`).bind(fid, null, tid, f.uid),
       ]);
       if (!res[1].meta.changes) throw new HttpError(409, "This family paid for an expense or the trip was just finalized. Reload and check.");
       await log(env, tid, name, `removed the ${f.name} family`);
@@ -595,18 +614,21 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const fam = await env.DB.prepare("SELECT uid FROM families WHERE id = ?").bind(fid).first<any>();
     if (b.uid !== fam.uid) throw stale();
     if (!str(b.name)) throw new HttpError(400, "Give the person a name");
+    const key = clientKey(b);
+    const made = key && await env.DB.prepare("SELECT id FROM people WHERE client_key = ? AND family_id = ?").bind(key, fid).first<any>();
+    if (made) return json({ id: made.id }, 200);
     const all = await allowedDays(env, tid);
     const own = !!b.own_days;
     const fencer = !!b.is_fencer;
     // Someone who follows the family gets its days as they are when the row is written.
     // A new fencer starts fencing every day they're there; it's one tap to take days off.
-    const r = await env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, fencing_days, own_days)
+    const r = await env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, fencing_days, own_days, client_key)
       SELECT ?1, ?2, ?3, d.days, CASE WHEN ?3 = 0 THEN '[]' WHEN ?4 IS NULL THEN d.days
-        ELSE (SELECT json_group_array(value) FROM json_each(?4) WHERE value IN (SELECT value FROM json_each(d.days))) END, ?5
+        ELSE (SELECT json_group_array(value) FROM json_each(?4) WHERE value IN (SELECT value FROM json_each(d.days))) END, ?5, ?9
       FROM (SELECT CASE WHEN ?5 = 1 THEN ?6 ELSE (SELECT days FROM families WHERE id = ?1) END AS days) d
       WHERE EXISTS (SELECT 1 FROM tournaments WHERE id = ?7 AND status = 'open' AND deleted_at IS NULL AND start_date || '/' || end_date = ?8) RETURNING id`)
       .bind(fid, str(b.name), fencer ? 1 : 0, b.fencing_days == null ? null : JSON.stringify(cleanDays(b.fencing_days, all)), own ? 1 : 0,
-        JSON.stringify(own ? cleanDays(b.days, all) : []), tid, all.span).first<any>();
+        JSON.stringify(own ? cleanDays(b.days, all) : []), tid, all.span, key).first<any>();
     if (!r) throw closed();
     await log(env, tid, name, `added ${str(b.name)}${fencer ? " (fencer)" : ""}`);
     return json({ id: r.id }, 201);
@@ -635,15 +657,15 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         : b.fencing_days == null ? (!p.is_fencer && !wasFencing.length ? days : wasFencing) : cleanDays(b.fencing_days, all)).filter(d => days.includes(d));
       // Someone following the family takes its days as read, so those must still be its days.
       const famSame = "(SELECT days FROM families WHERE id = ?) = ?";
-      const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?, days = ?, fencing_days = ?, own_days = ? WHERE id = ? AND days = ? AND fencing_days = ? AND ${OPEN} AND ${SAME_SPAN}${own ? "" : ` AND ${famSame}`}`).bind(
-        str(b.name) || p.name, fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(fencing), own ? 1 : 0, pid, p.days, p.fencing_days, p.tournament_id, p.tournament_id, all.span,
+      const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?, days = ?, fencing_days = ?, own_days = ? WHERE id = ? AND uid = ? AND days = ? AND fencing_days = ? AND ${OPEN} AND ${SAME_SPAN}${own ? "" : ` AND ${famSame}`}`).bind(
+        str(b.name) || p.name, fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(fencing), own ? 1 : 0, pid, p.uid, p.days, p.fencing_days, p.tournament_id, p.tournament_id, all.span,
         ...(own ? [] : [p.family_id, p.family_days])).run();
       if (!u.meta.changes) throw new HttpError(409, "That changed on another phone a moment ago. Reload and try again.");
       await log(env, p.tournament_id, name, `updated ${str(b.name) || p.name}`);
       return json({ ok: true });
     }
     if (method === "DELETE") {
-      const d = await env.DB.prepare(`DELETE FROM people WHERE id = ? AND ${OPEN}`).bind(pid, p.tournament_id).run();
+      const d = await env.DB.prepare(`DELETE FROM people WHERE id = ? AND uid = ? AND ${OPEN}`).bind(pid, p.uid, p.tournament_id).run();
       if (!d.meta.changes) throw closed();
       await log(env, p.tournament_id, name, `removed ${p.name}`);
       return json({ ok: true });
@@ -659,8 +681,20 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     // The phone names each new expense; a save retried after its reply was lost finds
     // the expense it already made instead of adding it twice.
     const key = typeof b.client_key === "string" && /^[0-9a-f-]{36}$/.test(b.client_key) ? b.client_key : null;
-    const made = key && await env.DB.prepare("SELECT id FROM expenses WHERE client_key = ? AND tournament_id = ?").bind(key, tid).first<any>();
-    if (made) return json({ id: made.id }, 200);
+    const made = key && await env.DB.prepare("SELECT * FROM expenses WHERE client_key = ? AND tournament_id = ?").bind(key, tid).first<any>();
+    if (made) {
+      // Their first save landed but its reply was lost. The same content: already saved.
+      // Changed since (they corrected something): apply it, unless someone else has
+      // edited this expense in the meantime.
+      if (EXPENSE_FIELDS.every(k => (e as any)[k] === made[k])) return json({ id: made.id }, 200);
+      const u = await env.DB.prepare(
+        `UPDATE expenses SET description = ?, vendor = ?, date = ?, category = ?, basis = ?, amount_cents = ?, paid_by = ?, split = ?,
+         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ?, rev = rev + 1 WHERE id = ? AND rev = 0 AND ${OPEN}`)
+        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, made.id, tid).run();
+      if (!u.meta.changes) throw new HttpError(409, "Your first save went through, and someone has changed this expense since. Open it from the list to see it.");
+      await log(env, tid, name, `edited ${e.description}`);
+      return json({ id: made.id }, 200);
+    }
     if (e.receipt_key && !(await env.RECEIPTS.head(e.receipt_key))) throw new HttpError(409, "That receipt upload has expired. Add the photo again.");
     const r = await env.DB.prepare(
       `INSERT INTO expenses (tournament_id, description, vendor, date, category, basis, amount_cents, paid_by, split, receipt_key, receipt_type, created_at, created_by, client_key)
@@ -686,7 +720,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const e = method === "PATCH" ? await expenseInput(env, old.tournament_id, b) : null;
     if ((method === "PATCH" || method === "DELETE") && b.rev !== old.rev) {
       // The same edit sent again because its reply was lost: it's already saved.
-      const same = e && b.rev === old.rev - 1 && (["description", "vendor", "date", "category", "basis", "amount_cents", "paid_by", "split", "receipt_key"] as const).every(k => (e as any)[k] === old[k]);
+      const same = e && b.rev === old.rev - 1 && EXPENSE_FIELDS.every(k => (e as any)[k] === old[k]);
       if (same) return json({ ok: true });
       throw new HttpError(409, "Someone changed this expense after you opened it. Go back and open it again to see their version.");
     }

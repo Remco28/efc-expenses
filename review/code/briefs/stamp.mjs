@@ -5,10 +5,12 @@ export async function stamp(B, cookie, p, m, b) {
   if (m === "GET" || b instanceof Uint8Array) return b;
   const H = { headers: { cookie } };
   // Trip details name the dates the form opened with; reopen names the ticks it saw.
-  const t = /^\/tournaments\/(\d+)(\/reopen)?$/.exec(p);
+  // ...and finalize names the latest change its screen saw.
+  const t = /^\/tournaments\/(\d+)(\/reopen|\/finalize)?$/.exec(p);
   if (t && (t[2] ? m === "POST" : m === "PATCH")) {
     const d = await (await fetch(`${B}/tournaments/${t[1]}`, H)).json();
     if (!d.tournament) return b;
+    if (t[2] === "/finalize") return { seen_activity: Math.max(0, ...d.activity.map(a => a.id)), ...(b || {}) };
     return t[2] ? { ticked: d.payments.filter(x => x.paid_at).length, ...(b || {}) }
       : { seen_start: d.tournament.start_date, seen_end: d.tournament.end_date, ...(b || {}) };
   }

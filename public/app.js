@@ -54,6 +54,7 @@ function toast(msg) {
 }
 
 class AuthError extends Error {}
+const addKeys = new Map();
 async function api(path, opts = {}) {
   const me = S.trip && S.trip.families.find(f => f.id === Number(load(`efc-fam-${S.trip.tournament.id}`)));
   const who = me?.kind === "staff" && S.name ? `${S.name} (${me.role || "Coach"})` : S.name;
@@ -67,13 +68,24 @@ async function api(path, opts = {}) {
     const r = rec[1] === "families" ? S.trip.families.find(f => f.id === id) : S.trip.families.flatMap(f => f.people).find(p => p.id === id);
     if (r?.uid) body = { ...(body || {}), uid: r.uid };
   }
+  // Adding a person, family or trip: the same add, tapped again after a lost reply,
+  // carries the same key, so the server finds the first one instead of adding twice.
+  const adds = opts.method === "POST" && /^\/(tournaments|tournaments\/\d+\/families|families\/\d+\/people)$/.test(path) && body && !(body instanceof Blob);
+  const addId = adds && path + JSON.stringify(body);
+  if (adds) { if (!addKeys.has(addId)) addKeys.set(addId, crypto.randomUUID()); body = { ...body, client_key: addKeys.get(addId) }; }
   if (body && !(body instanceof Blob)) { headers["content-type"] = "application/json"; body = JSON.stringify(body); }
+  // A request on a dead signal can hang for minutes: give up after a while and say so.
+  // A change whose reply never came may still have been saved, so say that too.
+  const reads = !opts.method || opts.method === "GET";
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), opts.body instanceof Blob ? 90000 : 25000);
   let res;
-  try { res = await fetch("/api" + path, { method: opts.method || "GET", headers, body, credentials: "same-origin" }); }
-  catch { throw new Error("No connection. Check your signal and try again."); }
+  try { res = await fetch("/api" + path, { method: opts.method || "GET", headers, body, credentials: "same-origin", signal: ctl.signal }); }
+  catch { throw new Error(reads ? "No connection. Check your signal and try again." : "The connection dropped before the app heard back, so this may or may not have saved. Check before trying again."); }
+  finally { clearTimeout(timer); }
+  if (adds && res.ok) addKeys.delete(addId);
   const data = res.headers.get("content-type")?.includes("json") ? await res.json() : null;
   if (res.status === 401 && path !== "/login") throw new AuthError();
-  if (!res.ok) throw new Error(data?.error || `Something went wrong (${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(data?.error || `Something went wrong (${res.status})`), { status: res.status });
   return data;
 }
 
@@ -174,7 +186,10 @@ function showTour(start = 0) {
 // ---------- routing ----------
 window.addEventListener("hashchange", route);
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden || S.draft || document.querySelector(".sheet-back, .tour-back")) return;
+  // Leaving for another app: a field still being typed in saves now (some phones never
+  // fire its change otherwise), and the expense draft is kept.
+  if (document.hidden) { keepDraft(); if (document.activeElement?.matches?.("#fam-name, #fam-pay, #st-name, #st-role, [data-pname]")) document.activeElement.blur(); return; }
+  if (S.draft || document.querySelector(".sheet-back, .tour-back")) return;
   // Family and staff screens save field by field; don't reload under someone's typing.
   if (/^#\/t\/\d+\/f\//.test(location.hash) || document.activeElement?.matches?.("input, textarea, select")) return;
   route();
@@ -213,7 +228,7 @@ async function show() {
       if (parts[2] === "e") return renderEditor(parts[3] === "new" ? null : Number(parts[3]));
       if (parts[2] === "f") { S.draft = null; return renderFamily(Number(parts[3])); }
       if (parts[2] === "day") { S.draft = null; return renderDay(parts[3]); }
-      S.draft = null;
+      S.draft = null; dropDraft();
       const tab = q.get("tab");
       return renderTrip(["expenses", "families", "settle", "treasurer"].includes(tab) ? tab : "expenses");
     }
@@ -837,6 +852,7 @@ function renderEditor(id) {
   const e = id ? expenses.find(x => x.id === id) : null;
   if (final()) { if (e) return renderExpenseView(e); location.hash = `#/t/${t.id}`; return; }
   if (id && !e) { location.hash = `#/t/${t.id}`; return; }
+  if ((!S.draft || S.draft.id !== (id || 0)) && (S.draft = keptDraft(t.id, id || 0))) toast("Picked up where you left off.");
   if (!S.draft || S.draft.id !== (id || 0)) {
     const me = myFamily();
     // Families added since this expense was entered count automatically too.
@@ -921,7 +937,9 @@ function followCategory(d) {
 function resetSplit() { S.draft.split = defaultSplit(S.draft.basis, S.trip.families); drawSplit(); }
 function cents(v) {
   let s = String(v).replace(/[$\s]/g, "");
-  s = /^\d+,\d{2}$/.test(s) ? s.replace(",", ".") : s.replace(/,/g, "");   // "12,50" is twelve fifty; "1,250" is 1250
+  // A comma before the last one or two digits is a decimal comma ("12,50", "12,5", "1.250,00");
+  // otherwise commas group thousands ("1,250").
+  s = /,\d{1,2}$/.test(s) ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
   const n = Math.round(parseFloat(s) * 100); return Number.isFinite(n) ? n : 0;
 }
 
@@ -1058,6 +1076,15 @@ function fillFromReceipt(f, d = S.draft) {
   drawSplit();
 }
 
+// The expense being typed is kept for this browser tab, so a reload doesn't lose it.
+const DRAFT = "efc-draft";
+function keepDraft() { if (!S.draft || !S.trip) return; try { sessionStorage.setItem(DRAFT, JSON.stringify({ trip: S.trip.tournament.id, d: { ...S.draft, uploading: false } })); } catch {} }
+function keptDraft(tid, id) { try { const k = JSON.parse(sessionStorage.getItem(DRAFT)); return k && k.trip === tid && k.d.id === id ? k.d : null; } catch { return null; } }
+function dropDraft() { try { sessionStorage.removeItem(DRAFT); } catch {} }
+document.addEventListener("input", () => keepDraft(), true);
+document.addEventListener("change", () => keepDraft(), true);
+document.addEventListener("click", () => setTimeout(keepDraft), true);
+
 async function saveExpense() {
   const d = S.draft, t = S.trip.tournament;
   if (d.uploading) return toast("The receipt is still being uploaded and read. Save again in a moment.");
@@ -1069,23 +1096,25 @@ async function saveExpense() {
   // A family added or removed on another phone since the form opened would be charged
   // or dropped without this form showing it: catch up, show it, and let them check.
   let fresh; try { fresh = await api(`/tournaments/${t.id}`); } catch (e) { return toast(e.message); }
-  const ids = tr => tr.families.map(f => f.id).sort().join();
+  // Who's on the trip, and which days: everything the shares on this form were worked out from.
+  const who = tr => JSON.stringify(tr.families.map(f => [f.id, f.kind, f.days, f.people.map(p => [p.id, p.is_fencer, p.days, p.fencing_days])]));
   if (S.draft !== d) return;
-  if (ids(fresh) !== ids(S.trip)) {
+  if (who(fresh) !== who(S.trip)) {
     S.trip = fresh;
     renderEditor(d.id || null);
-    return toast("A family joined or left the trip since you opened this. Check who's sharing, then save again.");
+    return toast("Who's on the trip changed since you opened this. Check the shares, then save again.");
   }
   const body = { description: d.description, vendor: d.vendor, date: d.date, category: d.category, basis: d.basis,
     amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at, rev: d.rev, client_key: d.client_key };
   // The form is frozen while it sends: a change made meanwhile would be thrown away
   // when the save lands. Moving to another screen unfreezes it (see show()).
-  document.getElementById("save").disabled = true;
+  const btn = document.getElementById("save"), label = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Saving…`;
   app.inert = true;
   try { await act(() => d.id ? api(`/expenses/${d.id}`, { method: "PATCH", body }) : api(`/tournaments/${t.id}/expenses`, { method: "POST", body }), "Expense saved"); }
-  catch { if (S.draft === d) { app.inert = false; document.getElementById("save").disabled = false; } return; }
+  catch { if (S.draft === d) { app.inert = false; btn.disabled = false; btn.innerHTML = label; } return; }
   if (S.draft !== d) return;            // they've moved on to something else meanwhile
-  S.draft = null;
+  S.draft = null; dropDraft();
   location.hash = `#/t/${t.id}`;
 }
 
@@ -1302,7 +1331,10 @@ app.addEventListener("click", async ev => {
         location.hash = `#/t/${id}`; return;
       case "del-expense":
         if (!(await confirmSheet("Delete this expense?", "It's removed for everyone, along with its receipt.", "Delete", true))) return;
-        await act(() => api(`/expenses/${id}`, { method: "DELETE", body: { created_at: S.trip.expenses.find(x => x.id === id)?.created_at, rev: S.trip.expenses.find(x => x.id === id)?.rev } }), "Deleted"); S.draft = null; location.hash = `#/t/${t.id}`; return;
+        { const seen = S.draft?.id === id ? S.draft : S.trip.expenses.find(x => x.id === id);
+          try { await api(`/expenses/${id}`, { method: "DELETE", body: { created_at: seen?.created_at, rev: seen?.rev } }); toast("Deleted"); }
+          catch (e) { if (e.status !== 404) { toast(e.message); return; } toast("Deleted"); } }   // 404: a retry of a delete that already went through
+        dropDraft(); S.draft = null; location.hash = `#/t/${t.id}`; return;
       case "drop-receipt": S.draft.receipt_key = null; S.draft.receipt_type = null; S.draft.aiNote = ""; return drawReceipt();
       case "volunteer": return volunteerSheet();
       case "reset-sandbox":
@@ -1312,7 +1344,7 @@ app.addEventListener("click", async ev => {
         location.hash = `#/t/${t.id}`; return refresh("expenses");
       case "finalize": {
         if (!(await confirmSheet("Finalize this trip?", `Expenses lock, and everyone settles through ${esc(t.treasurer_name)}. You can reopen it later if something was missed.`, "Finalize"))) return;
-        await act(() => api(`/tournaments/${t.id}/finalize`, { method: "POST" }), "Trip finalized");
+        await act(() => api(`/tournaments/${t.id}/finalize`, { method: "POST", body: { seen_activity: Math.max(0, ...S.trip.activity.map(a => a.id)) } }), "Trip finalized");
         await refresh("settle");
         if (await confirmSheet("Let everyone know", "Copy the list of who pays what, then paste it into the team chat.", "Copy payment list", false)) copy(finalMessage(S.trip.tournament));
         return;
@@ -1321,7 +1353,7 @@ app.addEventListener("click", async ev => {
       case "copy-need": return copy(needMessage(t));
       case "reopen": {
         const paid = S.trip.payments.some(x => x.paid_at);
-        if (!(await confirmSheet("Reopen this trip?", paid ? "Payments already ticked off will be cleared, and everything is recalculated when you finalize again." : "You can change expenses again, then finalize when you're done.", "Reopen", paid))) return;
+        if (!(await confirmSheet("Reopen this trip?", paid ? `${plural(S.trip.payments.filter(x => x.paid_at).length, "payment", "payments")} already ticked off will be cleared, and everything is recalculated when you finalize again.` : "You can change expenses again, then finalize when you're done.", "Reopen", paid))) return;
         await act(() => api(`/tournaments/${t.id}/reopen`, { method: "POST", body: { ticked: S.trip.payments.filter(x => x.paid_at).length } }), "Trip reopened"); return refresh("settle");
       }
       case "toggle-paid": {
