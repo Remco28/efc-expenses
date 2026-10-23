@@ -107,3 +107,25 @@ Fixes: a category change takes up its usual method unless a method was picked or
 Checks: 17 unit tests, every API script in briefs/, and browser checks for 1 and 3 with saves slowed down.
 
 Round 5 found 1 HIGH by our rating, so a round 6 follows, aimed at the round-5 changes.
+
+## Round 6, 2026-10-23
+
+Aimed at the round-5 changes, with narrow briefs for agy, Grok and opencode. All four delivered. Reports are in round6/.
+
+| # | Finding | Reviewers (their rating) | Ours |
+|---|---|---|---|
+| 1 | The family screen re-saved restored text after every reload: a value the server trims (a trailing space from a phone keyboard) looped saves forever, and a stale value could overwrite another parent's newer edit (a round-5 regression) | Grok MEDIUM, Codex MEDIUM (and LOW for the trailing-space loop) | HIGH |
+| 2 | Clearing a count to retype it, on a custom split or for a family not there that day, switched the family off mid-edit | agy MEDIUM | MEDIUM |
+| 3 | An expense save finishing after you'd moved on cleared the new draft and navigated away | Codex MEDIUM | MEDIUM |
+| 4 | An editor left open from before someone replaced the receipt pointed the expense back at the deleted file, and deleted the new one | opencode MEDIUM | MEDIUM |
+| 5 | A refresh was discarded when the phone came back from another app (a round-5 regression) | Grok MEDIUM | LOW (the save stuck, and the comeback reload redraws it; only lost if that reload also fails) |
+| 6 | A split key like "01" was stored but never read by the money math | opencode LOW | LOW |
+| 7 | The expense created_at check is skipped when a request leaves it out | opencode LOW | LOW, not changed: pages loaded before round 4 must keep saving; the app always sends it |
+
+agy also walked the expense editor through new, automatic, left-out, hand-set and receipt cases and found the saved split matches the screen in each.
+
+Fixes: the family screen now restores only the field being typed in and an unsent new person's name, and never re-sends anything (simpler than rounds 3 to 5). A cleared count waits for the number. An expense save only clears the draft it saved. A changed receipt must exist in storage. refresh() compares the address only. Split keys must be plain numbers.
+
+Checks: 17 unit tests, every API script in briefs/, and browser checks for 1, 2 and the earlier family-screen cases (Fencer tick, typed name, field in progress) with saves slowed down.
+
+Round 6 found 1 HIGH, again in a fix from the round before. A round 7 follows, aimed at the round-6 changes.

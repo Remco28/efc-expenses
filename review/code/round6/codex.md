@@ -1,0 +1,8 @@
+### [MEDIUM] Completed expense save discards a newer draft
+public/app.js:1051. Scenario: Save an expense on slow Wi-Fi, tap Back while its request is pending, then open another expense and start typing. The original save succeeds afterward. Wrong outcome: Its completion clears the newer `S.draft` and navigates to the trip list, silently losing the new input. Suggested fix: Capture the originating draft and route; clear the draft and navigate only if both still match.
+
+### [MEDIUM] Redraw re-saves an already-saved value over another parent’s correction
+public/app.js:725. Scenario: Payment details initially contain A. Parent 1 changes them to B and blurs; the PATCH succeeds. Parent 2 then saves C before Parent 1’s follow-up GET reads the family. Parent 1’s unfocused input still contains B with `defaultValue` A. Wrong outcome: The redraw treats B as unsaved, restores it over C, and dispatches `change` at line 733, silently overwriting Parent 2’s newer correction. Suggested fix: Track submitted and acknowledged values separately from unsaved edits; only replay edits made after the submitted value.
+
+### [LOW] Trailing whitespace causes an endless automatic save loop
+public/app.js:733. Scenario: Change a family name to `Smith `, including a trailing space, then leave the field. The server trims it to `Smith`. Wrong outcome: Every reload restores `Smith ` because it differs from the rendered value, dispatches another `change`, and repeats PATCH/GET indefinitely while the screen remains open. Payment details and staff fields have the same behavior. Suggested fix: Normalize values before comparing or saving, and stop replaying a value once its save has been acknowledged.

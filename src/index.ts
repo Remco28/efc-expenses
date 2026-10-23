@@ -196,7 +196,7 @@ async function expenseInput(env: Env, tid: number, b: any) {
   if (!ids.has(Number(b.paid_by))) throw new HttpError(400, "Pick the family that paid");
   const split: Record<string, number | null> = {};
   for (const [k, v] of Object.entries(b.split || {})) {
-    if (!ids.has(Number(k)) || staffIds.has(Number(k))) continue;
+    if (k !== String(Number(k)) || !ids.has(Number(k)) || staffIds.has(Number(k))) continue;   // "01" or " 1" would be stored but never read
     const n = Number(v);
     if (v != null && (!Number.isFinite(n) || n < 0 || n > 1000)) throw new HttpError(400, "Shares must be between 0 and 1000");
     split[k] = v == null ? null : n;
@@ -650,6 +650,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (b.created_at != null && b.created_at !== old.created_at) throw new HttpError(409, "That expense was deleted on another phone. Reload to see the list.");
     if (method === "PATCH") {
       const e = await expenseInput(env, old.tournament_id, b);
+      // A new receipt must really be there: an editor left open from before someone
+      // else replaced the receipt would otherwise point the expense at a deleted file.
+      if (e.receipt_key && e.receipt_key !== old.receipt_key && !(await env.RECEIPTS.head(e.receipt_key)))
+        throw new HttpError(409, "That receipt was replaced on another phone. Reload the expense and try again.");
       const u = await env.DB.prepare(
         `UPDATE expenses SET description = ?, vendor = ?, date = ?, category = ?, basis = ?, amount_cents = ?, paid_by = ?, split = ?,
          receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ? WHERE id = ? AND created_at = ? AND ${OPEN}`)

@@ -227,8 +227,8 @@ const tabNow = () => new URLSearchParams(location.hash.split("?")[1] || "").get(
 async function refresh(tab = tabNow()) {
   // Only while they're still on this trip's main screen: an action that finishes
   // after they've moved on must not paint the old trip over the new screen.
-  const id = S.trip.tournament.id, h0 = location.hash, seq = routeSeq;
-  const here = () => location.hash === h0 && routeSeq === seq && h0.split("?")[0] === `#/t/${id}`;
+  const id = S.trip.tournament.id, h0 = location.hash;
+  const here = () => location.hash === h0 && h0.split("?")[0] === `#/t/${id}`;
   if (!here()) return;
   const f = focusKey();
   const trip = await api(`/tournaments/${id}`);
@@ -717,22 +717,19 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
     if (!here()) return;
     // Text not yet saved (a field still being typed in, the new person's name)
     // survives the redraw. Read just before it, so nothing typed meanwhile is lost.
-    const keepIds = ["newname", "fam-name", "fam-pay", "st-name", "st-role"];
+    // Only text not yet sent survives the redraw: the field they're typing in (its
+    // save goes when they leave it) and a new person's name not yet added. A field
+    // they've left has already saved, so it shows what the server kept; nothing is
+    // ever re-sent from here.
+    const keepIds = ["fam-name", "fam-pay", "st-name", "st-role"];
     const act0 = document.activeElement;
     const typing = act0 && (keepIds.includes(act0.id) || act0.dataset?.pname);
-    // The field they're typing in keeps its text (even if they typed it back to what it was);
-    // others keep text that differs from what was saved.
-    const typed = Object.fromEntries(keepIds.map(id => [id, document.getElementById(id)]).filter(([, el]) => el && (el === act0 || el.value !== el.defaultValue)).map(([id, el]) => [id, el.value]));
+    const typed = typing ? [act0.id ? `#${act0.id}` : `[data-pname="${act0.dataset.pname}"]`, act0.value] : null;
+    const newName = document.getElementById("newname")?.value;
     const fencerTicked = document.getElementById("newfencer")?.checked;
-    const typedName = act0?.dataset?.pname ? [act0.dataset.pname, act0.value] : null;
     renderFamily(fid, typing ? focusKey() : focusAfter || focusKey());
-    for (const [id, v] of Object.entries(typed)) {
-      const el = document.getElementById(id); if (!el || el.value === v) continue;
-      el.value = v;
-      // A restored edit in a field they've already left would never fire its save: save it now.
-      if (id !== "newname" && el !== document.activeElement) el.dispatchEvent(new Event("change"));
-    }
-    if (typedName) { const el = document.querySelector(`[data-pname="${typedName[0]}"]`); if (el && el.value !== typedName[1]) el.value = typedName[1]; }
+    if (typed) { const el = document.querySelector(typed[0]); if (el) el.value = typed[1]; }
+    if (newName && document.getElementById("newname")) document.getElementById("newname").value = newName;
     if (fencerTicked != null && document.getElementById("newfencer")) document.getElementById("newfencer").checked = fencerTicked;
     // A failed save already said why in a toast; the redraw shows what really stuck.
     if (st()) { st().textContent = failed ? "" : `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
@@ -943,7 +940,7 @@ function drawSplit() {
   el.onchange = ev => {
     const c = ev.target.closest("[data-inc]");
     if (c) d.splitTouched = true;
-    if (!c) return;
+    if (!c) { if (ev.target.closest("[data-units]")?.value === "") drawSplit(); return; }   // left empty: show the count that stands
     const f = families.find(x => x.id === Number(c.dataset.inc));
     // Ticking a family nobody marked as there would count 0 and look broken, so
     // start it at 1. Unticking stores 0: a deliberate "not sharing" that sticks.
@@ -954,6 +951,9 @@ function drawSplit() {
   el.oninput = ev => {
     const u = ev.target.closest("[data-units]"); if (!u) return;
     d.splitTouched = true;
+    // Clearing a count to retype it: where "automatic" would count nobody (custom, or a
+    // family not there that day), wait for the number instead of switching the family off.
+    if (u.value === "" && (d.basis === "custom" || !autoUnits(d.basis, families.find(x => x.id === Number(u.dataset.units)), d.date))) return;
     d.split[u.dataset.units] = u.value === "" ? null : Math.max(0, Number(u.value));
     let pos = null; try { pos = u.selectionStart; } catch {}
     drawSplit();
@@ -1048,6 +1048,7 @@ async function saveExpense() {
   document.getElementById("save").disabled = true;
   try { await act(() => d.id ? api(`/expenses/${d.id}`, { method: "PATCH", body }) : api(`/tournaments/${t.id}/expenses`, { method: "POST", body }), "Expense saved"); }
   catch { document.getElementById("save").disabled = false; return; }
+  if (S.draft !== d) return;            // they've moved on to something else meanwhile
   S.draft = null;
   location.hash = `#/t/${t.id}`;
 }
