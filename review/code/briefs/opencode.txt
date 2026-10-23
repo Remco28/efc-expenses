@@ -1,6 +1,6 @@
 You are reviewing efc-expenses, a small Cloudflare Worker app (src/index.ts, D1 SQLite, R2) plus a browser app (public/app.js, public/split.js money math, public/pdf.js) that a fencing club's parents use to split shared travel-tournament costs. A handful of parents use it, sometimes at the same moment from their phones. There is one shared access code and anyone can edit anything; that is intended, not a finding.
 
-This is review round 4. Rounds 1 to 3 found and fixed many issues; see review/code/README.md. Round 3's fixes are in commit c44b109: run `git show c44b109` to see them. Fresh code is where fresh bugs come from, so look hardest at those changes, but anything in the repo is in scope.
+This is review round 5. Rounds 1 to 4 found and fixed many issues; see review/code/README.md. Round 4's fixes are in commit 94b66d1: run `git show 94b66d1` to see them. Fresh code is where fresh bugs come from, so look hardest at those changes, but anything in the repo is in scope.
 
 Read-only. Do not edit files, run the app, or touch the network.
 
@@ -15,4 +15,4 @@ Format each finding as:
 ### [SEVERITY] short title
 File:line. Scenario: ... Wrong outcome: ... Suggested fix: one or two lines.
 
-Your focus: the browser app, public/app.js. Check in particular the expense form (splitTouched/catTouched/dateTouched, fillFromReceipt, uploadReceipt and the uploading flag), the family screen (flipBtn, famSave, famQueue, redraw preserving typed text), route/show with routeSeq, and visibilitychange refresh. Can a parent's input be silently lost or a hand-set value silently replaced?
+Your focus: server concurrency and data integrity in src/index.ts. Check every write: does it check the trip is open, and the values it depends on, in the same statement? Look at OPEN, OPEN3, SAME_SPAN, FINGERPRINT_SQL and their bind order, the json_each/json_remove SQL, and the expense created_at check.
