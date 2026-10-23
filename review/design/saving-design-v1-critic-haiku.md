@@ -1,0 +1,36 @@
+Review of saving-design-v1.md, tested against the current code (src/index.ts, public/app.js, migrations 0008-0011). I read only the design file and those code files; I wrote and ran nothing.
+
+Short answer: the core idea (client-made ids, retry is harmless, an outbox on the phone) is sound and fits a bad-signal use case. But the design as written has a few real holes, one of them a silent-money-loss path, and it is bigger than this app needs.
+
+**1. Silent loss of an expense (the most important problem).** Today an offline expense fails loudly, so the parent knows. The outbox turns that into a greyed item that waits. Nothing tells the treasurer or the other parents that an expense is still queued. If the trip is finalized first, the queued expense is refused later ("trip is final", piece 5), and it drops out of the settlement without the treasurer seeing it. The design needs to say what happens to the greyed item then, and who sees it. A "N items still waiting on phones" note at finalize time is not possible without a server-side record of intent, so at minimum the refusal needs to reach the parent's screen loudly, not only when they next open the list.
+
+**2. Stale or late requests overwrite newer corrections.** Piece 2 lets the phone correct a waiting item in place, and piece 3 lets the server replace a record when "the last change came from this same phone from the same starting point." The app aborts requests after 25s (app.js line 90), but the server still processes an aborted request, and on a flaky link a request can arrive after a newer one. Sequence: send v2 (stalls, aborted), the parent fixes a typo, send v3 (lands), then the old v2 arrives. It has the same token and base, so the server "replaces" v3 with v2 and the correction is lost. The fix is a per-outbox-entry sequence number, with the server refusing any write older than the stored one. A per-phone token is not enough.
+
+**3. The "same phone" rule is weaker than the rev check it replaces.** Two tabs or a reloaded draft on the same phone share the token. Tab A saves v1 to v2 (confirmed). Tab B, still holding v1, saves v1 to v3 with the same token. The server sees "last change from this phone, same starting point" and replaces v2 silently. Today's `rev` check (expenses.rev, routes near index.ts line 750) catches this. The fix is to key on the outbox entry's attempt id, not the phone.
+
+**4. Classifying replies is underspecified and will loop.** Piece 6 treats only three refusals as real answers: someone else changed it, deleted, terms changed. Other 4xx answers the server really gives are not on that list. Examples: "receipt upload has expired" (line 730), "receipt was replaced" (line 763), validation failures from expenseInput, "finalized" if it is not covered by the terms check. Under the design these all count as "don't know yet", so the item retries forever. Because the queue is strictly one at a time, it also blocks every later item for that trip. The design needs a rule for permanent 4xx answers (drop, or park with a message), and every server error needs a machine-readable code. Today's errors are free text, so this touches every 409 in the file.
+
+**5. Receipts and the queue.** The design says an interrupted receipt upload leaves an orphan that gets cleaned up. If cleanup runs before the queued expense that references the receipt is sent, that expense can never succeed (see 4). It also doesn't say whether an expense waits for its photo, and that upload (a large file) is the step most likely to fail on bad signal.
+
+**6. Tombstones conflict with existing behaviour.** The design says "keep deleted markers forever." But purgeTrip (index.ts ~lines 80-95) hard-deletes deleted trips after a cutoff, and /restore (line ~460) undeletes trips. A tombstone that refuses every later save breaks restore. A late save for a purged trip would also be treated as "not there: create it." Also, expenses are hard-deleted today. Making them soft means every read path has to filter deleted rows: the totals, the finalize fingerprint, the PDF, the activity log. The design does not mention any of this, and a missed filter is a wrong settlement.
+
+**7. The terms version is broader than it looks.** Any roster change (a family joining, a person added) bumps it. Early in a trip, when people are adding families, queued expenses from other phones get "terms changed" conflicts. The design calls conflicts "occasional," and that may not hold in the first hour of a tournament. Also, replacing the round 8 and 9 checks with one generic version is not obviously simpler than those checks, which already work.
+
+**8. The duplicate badge is a weak backstop.** With the id scheme, duplicates arise only when phone storage is lost. The badge fires on any two expenses with the same amount and date, which at a tournament (ten parents buying $45 team dinners on Saturday) is common. Parents will learn to ignore it, which is worse than no badge. "One tap to remove either" is also a destructive action taken on a guess. Consider dropping the badge and making the one lost-storage case a visible note on the form.
+
+**9. Things the design leaves out.**
+- Migration: permanent ids for expenses, people and families need a backfill, and the `split` and `paid_by` JSON reference numeric person ids. Either those move to ids too, or there is a mapping layer. The design says "old ids stay internal" without saying how the references work.
+- Where the outbox lives: localStorage, IndexedDB, or sessionStorage. Each has different loss behaviour, and the app already uses all three for different things.
+- Retry timing: "when the signal returns" needs a trigger. navigator.onLine is true on captive wifi, so this needs a backoff plus a real probe.
+- Receipt AI reading needs signal, so an offline expense is saved without the AI fill. The design should say so.
+
+**10. Is it more complicated than it needs to be?** Yes. The design is a general sync engine (uids everywhere, tombstones, per-phone tokens, a terms version, a reply classifier, a duplicate heuristic, a conflict screen) for a few parents and a few trips a year. Much of the value is already in the code. Client keys exist for adds (migration 0009), rev checks exist for edits and deletes, a 404 on delete is treated as done, and a pending expense is kept in localStorage. What is actually missing is one thing: a persistent, ordered queue for expense saves, with a loud failure when a save is refused.
+
+Suggested smaller version:
+- An outbox for expenses only, with a per-entry sequence number and the existing client_key for creates.
+- Keep the existing per-endpoint checks (rev, created_at, finalize fingerprint). Add a machine code to each conflict so the outbox can tell refusals from unknowns.
+- Trips, people, families, finalize and payments stay online-only with a clear "needs signal" message. That covers almost all the real use.
+- Drop the uids, the tokens, the terms version, and the duplicate badge. Keep deletes hard unless there is a demonstrated need.
+- Decide what a refused queued item looks like to the parent, and make it loud.
+
+**It holds up** on the core idea: retry-safe writes keyed by a client-made id. The problems are in the edges: loss of intent, late arrivals, the classification of refusals, and tombstones against the existing purge and restore.
