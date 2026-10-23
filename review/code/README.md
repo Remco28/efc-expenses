@@ -325,3 +325,12 @@ Checks: every API script (round9b.mjs is new: a trip, family and person typo eac
 Deploy note: migration 0011 failed silently on the first try, and the code was deployed in the same command anyway, so for about a minute the live code expected columns that didn't exist. The activity log shows nobody used the site in that window. The deploy order is now an office convention: migrate, confirm nothing is pending, then deploy.
 
 **Believed, and wrong:** "No reviewer rated anything HIGH" as a finding about the round, rather than about the reviewers' calibration. And the plan for the duplicates, quoted above.
+
+### Peer passes 2 and 3, and an open design question
+
+Following the loop (improve the plan, then hand it to a fresh group), the fix as built went to a fresh group, and the improved plan after that to another.
+
+- **Pass 2** (two critics, two blind solvers; round9/peer-pass2-*.md) broke the author's own added details. The retry key belonged to the screen, not the attempt, and the server "corrected" entries itself, so a lost "Ava" followed by adding "Ben" would silently rename Ava to Ben, and a family add followed by a coach add would leave a broken half-coach row. Keys were also dropped on half-received replies and gateway error pages.
+- **Pass 3** (two critics; round9/peer-pass3-*.md) agreed on the direction (keys made by the phone; a server that only returns what a key already made; a phone that remembers an unsure add until a real answer), but the fix had grown across the server, the phone's storage and every kind of add: a positive test for a real answer, remembering before sending, checking an older unsure add before a new one, a server-computed "same or not", a deleted-key registry, and conflict-safe inserts everywhere.
+
+**Stopped as structural, by the loop's stop rule:** after three fresh passes the fix still wouldn't settle small, so it is not a fix. **Open design question for the human: how should the app save reliably on a bad connection?** The pass-3 reports are the starting material. Until it's decided, the live code has the round-9 follow-up as built, with pass 2's known flaw (a lost add followed by a different add of the same kind within 10 minutes can overwrite the first). There is no real use of the app until roughly early November 2026.
