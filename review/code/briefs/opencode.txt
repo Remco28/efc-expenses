@@ -1,18 +1,16 @@
-You are reviewing efc-expenses, a small Cloudflare Worker app (src/index.ts, D1 SQLite, R2) plus a browser app (public/app.js, public/split.js money math, public/pdf.js) that a fencing club's parents use to split shared travel-tournament costs. A handful of parents use it, sometimes at the same moment from their phones. There is one shared access code and anyone can edit anything; that is intended, not a finding.
+You are an experienced engineer reviewing a small web app before a fencing club relies on it for real money.
 
-This is review round 7. Rounds 1 to 6 found and fixed many issues; see review/code/README.md. Round 6's fixes are in commit 6382b87: run `git show 6382b87` to see them. Fresh code is where fresh bugs come from, so look hardest at those changes, but anything in the repo is in scope.
+Your copy of the code is /tmp/claude-1000/-home-frank-Dev-agent-office/5c8f63e1-975c-455f-891c-a49fa0bbcc0b/scratchpad/rl8/opencode, at commit ddd5fc4. It is yours: run it, add scripts, change anything there; nothing you do reaches anyone. To run the app:
+  npx wrangler d1 migrations apply efc-expenses --local --persist-to .local-db
+  npx wrangler dev --port 8834 --ip 127.0.0.1 --persist-to .local-db
+The access code is fence-local-test. Earlier reviews and what was done about them: review/code/README.md. Stay inside your copy.
 
-Read-only. Do not edit files, run the app, or touch the network.
+What it is for: parents of a fencing club use it to split the shared costs of team trips to tournaments (meals, the coach's travel and stay, transport), fairly, and settle up through one volunteer treasurer. A handful of parents use it, sometimes at the same moment from their phones.
 
-Report ONLY problems with a concrete failure scenario: the steps, the state and the wrong outcome. No style, naming, refactoring, test-coverage or "consider adding" notes. If you find nothing serious, say so; an empty report is a fine answer.
+Your lens is money. Does every family end up owing, paying and being paid the right amount, and does every screen and the PDF record say so?
 
-Rate each finding:
-- HIGH: in realistic use, produces wrong money owed, loses or corrupts data, or lets an action through that should be blocked, without anyone noticing.
-- MEDIUM: wrong result only in a rare timing or unusual sequence, or a visible wrong number that is recoverable (e.g. by reopening the trip).
-- LOW: abuse by someone with the access code, edge-case input, or an annoyance.
+Do not hunt for problems to fill space. "Nothing wrong" is a real and useful answer.
 
-Format each finding as:
-### [SEVERITY] short title
-File:line. Scenario: ... Wrong outcome: ... Suggested fix: one or two lines.
+Intended, not findings: anyone with the access code can change anything; reading receipts with AI is switched off in your copy; a page opened before a release is told to reload on its next change.
 
-Your focus, kept narrow so you can finish within 20 minutes: the server's expense routes in src/index.ts only (expenseInput, POST /tournaments/:id/expenses, PATCH and DELETE /expenses/:id, receipts upload and read). Check the created_at identity check, the OPEN guard, receipt handling and validation. Write your report as soon as you have checked those; do not read other files.
+For each problem: a severity (HIGH: in real use, someone ends up with a wrong result or loses work without noticing; MEDIUM: only in a rare timing or sequence, or wrong but visible and recoverable; LOW: an annoyance or abuse by someone already trusted), what happens step by step, and whether you ran it or reasoned it from the code.
