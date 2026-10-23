@@ -1,6 +1,6 @@
 You are reviewing efc-expenses, a small Cloudflare Worker app (src/index.ts, D1 SQLite, R2) plus a browser app (public/app.js, public/split.js money math, public/pdf.js) that a fencing club's parents use to split shared travel-tournament costs. A handful of parents use it, sometimes at the same moment from their phones. There is one shared access code and anyone can edit anything; that is intended, not a finding.
 
-This is review round 5. Rounds 1 to 4 found and fixed many issues; see review/code/README.md. Round 4's fixes are in commit 94b66d1: run `git show 94b66d1` to see them. Fresh code is where fresh bugs come from, so look hardest at those changes, but anything in the repo is in scope.
+This is review round 6. Rounds 1 to 5 found and fixed many issues; see review/code/README.md. Round 5's fixes are in commit 0653147: run `git show 0653147` to see them. Fresh code is where fresh bugs come from, so look hardest at those changes, but anything in the repo is in scope.
 
 Read-only. Do not edit files, run the app, or touch the network.
 
@@ -15,4 +15,4 @@ Format each finding as:
 ### [SEVERITY] short title
 File:line. Scenario: ... Wrong outcome: ... Suggested fix: one or two lines.
 
-Your focus, kept narrow so you can finish within 20 minutes: money correctness in public/split.js only, and the Settle tab's numbers in public/app.js (search for renderSettle or 'settle'). Do the shares always add up to the expense, and do the amounts a family sees agree with each other? Write your report as soon as you have checked those; do not read other files.
+Your focus, kept narrow so you can finish within 20 minutes: the expense editor in public/app.js only (renderEditor through save, including followCategory and fillFromReceipt). Walk through these cases by reading the code: a new expense, an existing expense with an automatic split, one with a family left out, one with a hand-set count, and a receipt read into each. Does the saved split method and split match what the parent sees? Write your report as soon as you have checked those.
