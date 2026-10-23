@@ -63,3 +63,27 @@ All fixed except 15. The fix pattern for 4–10: the database reads current valu
 Checks: 17 unit tests, the round 1–2 API scripts, a new 16-step round-3 script, and browser checks for 1 and 2 with saves slowed down.
 
 Round 3 still found HIGH issues, so a round 4 follows.
+
+## Round 4, 2026-10-23
+
+Focuses rotated (Codex: money, agy: server, opencode: browser, Grok: round-3 diff), each with a 25-minute limit. Only Codex and opencode delivered: agy hit its time limit mid-turn and Grok compacted its context and never wrote a report. Reports are in round4/.
+
+| # | Finding | Reviewers (their rating) | Ours |
+|---|---|---|---|
+| 1 | Unticking a family or hand-setting a count, then changing the category, silently reset the split | Codex HIGH, opencode MEDIUM | HIGH |
+| 2 | Expense ids are reused after the newest is deleted; a stale editor could overwrite or delete the new expense | opencode HIGH | HIGH (reproduced: the next expense got the deleted id) |
+| 3 | Family screen captured typed text and the Fencer box before its reload, then restored the older values | opencode MEDIUM | MEDIUM |
+| 4 | An action finishing after you navigated away repainted the old trip | opencode MEDIUM | MEDIUM |
+| 5 | Family search (over 8 families) didn't hide anything | opencode LOW | MEDIUM (a visible broken feature for a club our size) |
+| 6 | A family or day change could keep days the trip no longer has, if the dates changed at the same moment | Codex MEDIUM | MEDIUM |
+| 7 | Payment tick checked the payment's identity before writing, not in the write | Codex MEDIUM | LOW (a reopen, an edit and a finalize would all have to land within one request) |
+| 8 | Family 1's save could redraw over family 12's screen | opencode LOW | LOW |
+| 9 | A failed Add could put its name into another family's form | opencode LOW | LOW |
+
+All fixed. Not fixed, LOW: families and people ids can be reused the same way as expenses, but only a family screen left open on a deleted family could hit it.
+
+From the user's own testing, same release: the club logo was off-centre in its badge, new screens opened at the previous screen's scroll position, the treasurer banner crowded the Expenses list, and Add expense was at the bottom on a laptop.
+
+Checks: 17 unit tests, every API script in briefs/ (round4.mjs is new) and browser checks for 1, 5 and the layout.
+
+Round 4 found 2 HIGH issues, both in code older than round 3, so a round 5 follows.

@@ -264,7 +264,7 @@ table.grid tr.fam td { text-align: left; font-size: 11px; font-weight: 750; lett
 #toast.show { opacity: 1; transform: translateX(-50%); }
 
 .fab { position: fixed; z-index: 8; left: 50%; transform: translateX(-50%); bottom: calc(18px + env(safe-area-inset-bottom)); width: min(688px, calc(100% - 32px)); box-shadow: 0 6px 18px rgba(20, 42, 76, .28); }
-@media (min-width: 960px) { .fab { position: static; transform: none; width: 100%; box-shadow: none; margin-top: 12px; } }
+@media (min-width: 960px) { .fab { position: static; transform: none; width: 100%; box-shadow: none; margin-bottom: 12px; } }
 .empty { text-align: center; color: var(--ink-3); padding: 20px 8px; }
 .empty .ic { width: 52px; height: 52px; border-radius: 50%; background: var(--raised); display: grid; place-items: center; margin: 0 auto 10px; color: var(--navy-2); }
 .empty .ic svg { width: 24px; height: 24px; }
@@ -418,6 +418,7 @@ table.bal tr:last-child td.n b { display: inline-block; border-top: 1px solid va
 /* ---------- families: summary list, manage screen, day check ---------- */
 .famrow { display: flex; gap: 10px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--rule); text-decoration: none; color: inherit; }
 .famrow:last-child { border-bottom: none; }
+.famrow[hidden] { display: none; }
 .famrow:hover .fam-name { color: var(--link); }
 .famrow .grow { flex: 1; min-width: 0; }
 .famrow > svg { color: var(--ink-3); }

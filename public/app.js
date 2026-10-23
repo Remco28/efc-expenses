@@ -225,9 +225,15 @@ async function show() {
 async function loadTrip(id) { S.trip = await api(`/tournaments/${id}`); }
 const tabNow = () => new URLSearchParams(location.hash.split("?")[1] || "").get("tab") || "expenses";
 async function refresh(tab = tabNow()) {
-  const f = focusKey(), seq = routeSeq;
-  await loadTrip(S.trip.tournament.id);
-  if (seq === routeSeq) renderTrip(tab, f);   // not if they've moved to another screen meanwhile
+  // Only while they're still on this trip's main screen: an action that finishes
+  // after they've moved on must not paint the old trip over the new screen.
+  const id = S.trip.tournament.id, here = () => location.hash.split("?")[0] === `#/t/${id}`;
+  if (!here()) return;
+  const f = focusKey();
+  const trip = await api(`/tournaments/${id}`);
+  if (!here()) return;
+  S.trip = trip;
+  renderTrip(tab, f);
 }
 
 function bar({ back, title, sub, right = "" }) {
@@ -471,14 +477,15 @@ function tabExpenses(el) {
           <div class="meta">${esc(famName(e.paid_by))} paid · ${bad.has(e.id) ? `<span class="owe">nobody included</span>` : `${BASES[e.basis].label.toLowerCase()}, ${plural(s.total, BASES[e.basis].unit, BASES[e.basis].units)}`}</div></div>
         <div><div class="amt">${money(e.amount_cents)}</div>
           <div class="rc ${e.receipt_key ? "has" : ""}">${icon(e.receipt_key ? "receipt" : "nore")}${e.receipt_key ? "Receipt" : "No receipt"}</div></div></a>`; }).join("")}`).join("");
+  // The treasurer ask lives on the Treasurer tab and in the next-step card, not over the list.
+  // Add expense comes first: it floats at the bottom on a phone and sits at the top on a laptop.
   el.innerHTML = `
-    ${!t.treasurer_name && expenses.length && !final() ? needTreasurerCallout(t) : ""}
+    ${final() ? "" : `<a class="btn btn-primary fab" href="#/t/${t.id}/e/new">${icon("plus")} Add expense</a>`}
     <div class="card ledger">
       <div class="total"><span class="muted">${plural(expenses.length, "shared expense", "shared expenses")}</span><span class="v">${money(total)}</span></div>
       ${expenses.length ? rows : `<div class="empty"><div class="ic">${icon("receipt")}</div><b>Nothing added yet</b>Whoever pays for something shared adds it here, ideally with a photo of the receipt.</div>`}
     </div>
-    <p class="hint" style="padding:0 4px">Shared costs only: team meals, the coach's travel and stay, transport and supplies. Your own flight and room aren't included, and neither are coaching fees.</p>
-    ${final() ? "" : `<a class="btn btn-primary fab" href="#/t/${t.id}/e/new">${icon("plus")} Add expense</a>`}`;
+    <p class="hint" style="padding:0 4px">Shared costs only: team meals, the coach's travel and stay, transport and supplies. Your own flight and room aren't included, and neither are coaching fees.</p>`;
 }
 
 // ---------- families & attendance ----------
@@ -691,6 +698,8 @@ async function pickStaff() {
 // Every change on the Manage family screen saves immediately. Saves run one
 // after another (quick taps queue up), and the screen redraws once they're done.
 let famQueue = Promise.resolve(), famPending = 0, famFailed = false;
+const hashPath = () => location.hash.split("?")[0];
+const onFamily = (tid, fid) => hashPath() === `#/t/${tid}/f/${fid}`;
 function famSave(fid, call, msg = "Saved", focusAfter) {
   const st = () => document.getElementById("savestate");
   if (st()) st().textContent = "Saving…";
@@ -701,22 +710,22 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
     const failed = famFailed; famFailed = false;
     // If they've already left this screen (tapped Done or Back while a save was
     // still going), don't drag them back: the new screen loads fresh data itself.
-    const here = () => location.hash.startsWith(`#/t/${S.trip.tournament.id}/f/${fid}`);
+    const here = () => onFamily(S.trip.tournament.id, fid);
     if (!here()) return;
-    const f = focusAfter || focusKey();
+    await loadTrip(S.trip.tournament.id);
+    if (!here()) return;
     // Text not yet saved (a field still being typed in, the new person's name)
-    // survives the redraw.
+    // survives the redraw. Read just before it, so nothing typed meanwhile is lost.
+    const f = focusAfter || focusKey();
     const keepIds = ["newname", "fam-name", "fam-pay", "st-name", "st-role"];
     const typed = Object.fromEntries(keepIds.map(id => [id, document.getElementById(id)]).filter(([, el]) => el && el.value !== el.defaultValue).map(([id, el]) => [id, el.value]));
     const fencerTicked = document.getElementById("newfencer")?.checked;
     const act0 = document.activeElement;
     const typedName = act0?.dataset?.pname && act0.value !== act0.defaultValue ? [act0.dataset.pname, act0.value] : null;
-    await loadTrip(S.trip.tournament.id);
-    if (!here()) return;
     renderFamily(fid, f);
     for (const [id, v] of Object.entries(typed)) { const el = document.getElementById(id); if (el) el.value = v; }
     if (typedName) { const el = document.querySelector(`[data-pname="${typedName[0]}"]`); if (el) el.value = typedName[1]; }
-    if (fencerTicked && document.getElementById("newfencer")) document.getElementById("newfencer").checked = true;
+    if (fencerTicked != null && document.getElementById("newfencer")) document.getElementById("newfencer").checked = fencerTicked;
     // A failed save already said why in a toast; the redraw shows what really stuck.
     if (st()) { st().textContent = failed ? "" : `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
    } catch (e) { console.error(e); if (st()) st().textContent = ""; }     // a failed reload must not block later saves
@@ -762,7 +771,7 @@ function wireFamily(f) {
     let failed = false;
     await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: fencer } }).catch(e => { failed = true; throw e; }), `${n} added`);
     // Not added: put back what they typed so they can try again.
-    if (failed && document.getElementById("newname")) { document.getElementById("newname").value = n; document.getElementById("newfencer").checked = fencer; }
+    if (failed && onFamily(S.trip.tournament.id, fid) && document.getElementById("newname")) { document.getElementById("newname").value = n; document.getElementById("newfencer").checked = fencer; }
     document.getElementById("newname")?.focus();
   };
 }
@@ -915,7 +924,7 @@ function drawSplit() {
     : `<b>Enter the amount</b>then pick who paid`;
   el.onchange = ev => {
     const c = ev.target.closest("[data-inc]");
-    if (c) d.splitTouched = true;
+    if (c) d.splitTouched = d.basisTouched = true;
     if (!c) return;
     const f = families.find(x => x.id === Number(c.dataset.inc));
     // Ticking a family nobody marked as there would count 0 and look broken, so
@@ -926,7 +935,7 @@ function drawSplit() {
   };
   el.oninput = ev => {
     const u = ev.target.closest("[data-units]"); if (!u) return;
-    d.splitTouched = true;
+    d.splitTouched = d.basisTouched = true;
     d.split[u.dataset.units] = u.value === "" ? null : Math.max(0, Number(u.value));
     let pos = null; try { pos = u.selectionStart; } catch {}
     drawSplit();
@@ -1017,7 +1026,7 @@ async function saveExpense() {
   const s = shares({ ...d, amount_cents }, S.trip.families);
   if (!s.total) return toast("Include at least one family");
   const body = { description: d.description, vendor: d.vendor, date: d.date, category: d.category, basis: d.basis,
-    amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type };
+    amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at };
   document.getElementById("save").disabled = true;
   try { await act(() => d.id ? api(`/expenses/${d.id}`, { method: "PATCH", body }) : api(`/tournaments/${t.id}/expenses`, { method: "POST", body }), "Expense saved"); }
   catch { document.getElementById("save").disabled = false; return; }
@@ -1238,7 +1247,7 @@ app.addEventListener("click", async ev => {
         location.hash = `#/t/${id}`; return;
       case "del-expense":
         if (!(await confirmSheet("Delete this expense?", "It's removed for everyone, along with its receipt.", "Delete", true))) return;
-        await act(() => api(`/expenses/${id}`, { method: "DELETE" }), "Deleted"); S.draft = null; location.hash = `#/t/${t.id}`; return;
+        await act(() => api(`/expenses/${id}`, { method: "DELETE", body: { created_at: S.trip.expenses.find(x => x.id === id)?.created_at } }), "Deleted"); S.draft = null; location.hash = `#/t/${t.id}`; return;
       case "drop-receipt": S.draft.receipt_key = null; S.draft.receipt_type = null; S.draft.aiNote = ""; return drawReceipt();
       case "volunteer": return volunteerSheet();
       case "reset-sandbox":
