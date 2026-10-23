@@ -54,7 +54,20 @@ function toast(msg) {
 }
 
 class AuthError extends Error {}
-const addKeys = new Map();
+// Adding a person, family or trip: one key per thing being added, kept for this tab
+// until the server answers, so a retry after a lost reply (even with a typo fixed, or
+// after a reload) reaches the first one instead of adding a second.
+const ADDS = "efc-add-keys", ADD_TTL = 10 * 60000;
+function addKeys() { try { return JSON.parse(sessionStorage.getItem(ADDS)) || {}; } catch { return {}; } }
+function setAddKeys(m) { try { sessionStorage.setItem(ADDS, JSON.stringify(m)); } catch {} }
+function addKeyFor(path) {
+  const m = addKeys(), k = m[path];
+  if (k && Date.now() - k.at < ADD_TTL) return k.key;
+  m[path] = { key: crypto.randomUUID(), at: Date.now() }; setAddKeys(m); return m[path].key;
+}
+const pendingAddKey = path => { const k = addKeys()[path]; return k && Date.now() - k.at < ADD_TTL ? k.key : null; };
+function forgetAddKey(path) { const m = addKeys(); delete m[path]; setAddKeys(m); }
+
 async function api(path, opts = {}) {
   const me = S.trip && S.trip.families.find(f => f.id === Number(load(`efc-fam-${S.trip.tournament.id}`)));
   const who = me?.kind === "staff" && S.name ? `${S.name} (${me.role || "Coach"})` : S.name;
@@ -68,11 +81,8 @@ async function api(path, opts = {}) {
     const r = rec[1] === "families" ? S.trip.families.find(f => f.id === id) : S.trip.families.flatMap(f => f.people).find(p => p.id === id);
     if (r?.uid) body = { ...(body || {}), uid: r.uid };
   }
-  // Adding a person, family or trip: the same add, tapped again after a lost reply,
-  // carries the same key, so the server finds the first one instead of adding twice.
   const adds = opts.method === "POST" && /^\/(tournaments|tournaments\/\d+\/families|families\/\d+\/people)$/.test(path) && body && !(body instanceof Blob);
-  const addId = adds && path + JSON.stringify(body);
-  if (adds) { if (!addKeys.has(addId)) addKeys.set(addId, crypto.randomUUID()); body = { ...body, client_key: addKeys.get(addId) }; }
+  if (adds) body = { ...body, client_key: addKeyFor(path) };
   if (body && !(body instanceof Blob)) { headers["content-type"] = "application/json"; body = JSON.stringify(body); }
   // A request on a dead signal can hang for minutes: give up after a while and say so.
   // A change whose reply never came may still have been saved, so say that too.
@@ -82,7 +92,7 @@ async function api(path, opts = {}) {
   try { res = await fetch("/api" + path, { method: opts.method || "GET", headers, body, credentials: "same-origin", signal: ctl.signal }); }
   catch { throw new Error(reads ? "No connection. Check your signal and try again." : "The connection dropped before the app heard back, so this may or may not have saved. Check before trying again."); }
   finally { clearTimeout(timer); }
-  if (adds && res.ok) addKeys.delete(addId);
+  if (adds) forgetAddKey(path);         // the server answered: whatever it said, there's no doubt left
   const data = res.headers.get("content-type")?.includes("json") ? await res.json() : null;
   if (res.status === 401 && path !== "/login") throw new AuthError();
   if (!res.ok) throw Object.assign(new Error(data?.error || `Something went wrong (${res.status})`), { status: res.status });
@@ -466,7 +476,10 @@ document.addEventListener("change", ev => {
   renderTrip(tabNow(), '[data-act="pick-me"][data-id=""]');
 });
 
+let pendingNoted = false;
 function renderTrip(tab, focusSel = focusKey()) {
+  const p = settlePending();
+  if (p && !pendingNoted) { pendingNoted = true; setTimeout(() => toast(`Your last expense (${pendingLabel(p)}) may not have saved. Tap Add expense to check it.`), 600); }
   const { tournament: t } = S.trip;
   const tabs = [["expenses", "Expenses"], ["families", "Families"], ["settle", "Settle up"], ["treasurer", "Treasurer"]]
     .map(([k, l]) => `<a href="#/t/${t.id}?tab=${k}" class="${k === tab ? "on" : ""}" ${k === tab ? 'aria-current="page"' : ""}>${l}</a>`).join("");
@@ -808,6 +821,11 @@ function wireFamily(f) {
     const fencer = document.getElementById("newfencer").checked;
     let failed = false;
     await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: fencer } }).catch(e => { failed = true; throw e; }), `${n} added`);
+    // The reply was lost, but the screen has reloaded: if they're there, it worked.
+    const k = failed && pendingAddKey(`/families/${fid}/people`);
+    if (k && S.trip.families.some(f => f.people.some(p => p.client_key === k))) {
+      forgetAddKey(`/families/${fid}/people`); toast(`${n} was added after all.`); failed = false;
+    }
     // Not added: put back what they typed so they can try again.
     if (failed && onFamily(S.trip.tournament.id, fid) && document.getElementById("newname") && !document.getElementById("newname").value) { document.getElementById("newname").value = n; document.getElementById("newfencer").checked = fencer; }
     document.getElementById("newname")?.focus();
@@ -853,6 +871,10 @@ function renderEditor(id) {
   if (final()) { if (e) return renderExpenseView(e); location.hash = `#/t/${t.id}`; return; }
   if (id && !e) { location.hash = `#/t/${t.id}`; return; }
   if ((!S.draft || S.draft.id !== (id || 0)) && (S.draft = keptDraft(t.id, id || 0))) toast("Picked up where you left off.");
+  if (!id && !S.draft) {
+    const p = settlePending();
+    if (p) { S.draft = p; dropPending(p.client_key); toast(`Your last expense (${pendingLabel(p)}) may not have saved. It's back here: check it and save.`); }
+  }
   if (!S.draft || S.draft.id !== (id || 0)) {
     const me = myFamily();
     // Families added since this expense was entered count automatically too.
@@ -1076,6 +1098,19 @@ function fillFromReceipt(f, d = S.draft) {
   drawSplit();
 }
 
+// A new expense sent without a reply is remembered on this phone until it's settled.
+const PENDING = "efc-pending-expense";
+function keepPending(tid, d) { try { localStorage.setItem(PENDING, JSON.stringify({ trip: tid, d: { ...d, uploading: false } })); } catch {} }
+function readPending(tid) { try { const p = JSON.parse(localStorage.getItem(PENDING)); return p && p.trip === tid ? p.d : null; } catch { return null; } }
+function dropPending(key) { try { const p = JSON.parse(localStorage.getItem(PENDING)); if (p && (!key || p.d.client_key === key)) localStorage.removeItem(PENDING); } catch {} }
+const pendingLabel = d => `${d.description || "expense"}, ${money(cents(d.amount))}`;
+// Did the unconfirmed one land? Say so once, and forget it.
+function settlePending() {
+  const p = S.trip && readPending(S.trip.tournament.id);
+  if (!p || !S.trip.expenses.some(e => e.client_key === p.client_key)) return p;
+  dropPending(p.client_key); toast(`Your last expense (${pendingLabel(p)}) did save.`); return null;
+}
+
 // The expense being typed is kept for this browser tab, so a reload doesn't lose it.
 const DRAFT = "efc-draft";
 function keepDraft() { if (!S.draft || !S.trip) return; try { sessionStorage.setItem(DRAFT, JSON.stringify({ trip: S.trip.tournament.id, d: { ...S.draft, uploading: false } })); } catch {} }
@@ -1112,7 +1147,14 @@ async function saveExpense() {
   btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Saving…`;
   app.inert = true;
   try { await act(() => d.id ? api(`/expenses/${d.id}`, { method: "PATCH", body }) : api(`/tournaments/${t.id}/expenses`, { method: "POST", body }), "Expense saved"); }
-  catch { if (S.draft === d) { app.inert = false; btn.disabled = false; btn.innerHTML = label; } return; }
+  catch (e) {
+    // No reply at all (not a refusal): it may have saved. Remember it, so next time the
+    // app can say it did, or offer it again with the same key (which can't add it twice).
+    if (!d.id && e.status == null && !(e instanceof AuthError)) keepPending(t.id, d);
+    if (S.draft === d) { app.inert = false; btn.disabled = false; btn.innerHTML = label; }
+    return;
+  }
+  dropPending(d.client_key);
   if (S.draft !== d) return;            // they've moved on to something else meanwhile
   S.draft = null; dropDraft();
   location.hash = `#/t/${t.id}`;

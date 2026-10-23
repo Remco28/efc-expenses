@@ -291,3 +291,37 @@ Answered: R6 #7 (created_at optional) is superseded, since every expense change 
 1. A fix that makes a retry "safe" by ignoring what the retry says. A retry is the same request only if its content is the same.
 2. Writing in the record that a fix does more than it does (the reopen count, row 12).
 3. Leaving test servers running between rounds, so a reviewer's first test hits the wrong copy.
+
+### The disposition audit of round 9, and our response
+
+The audit's main point holds: **we moved the LOW/MEDIUM line but kept MEDIUM as the ceiling.** Rated against the scale's words and our own earlier precedents, round 9 was not clean. Re-rated:
+
+| Row | Was | Now | Why |
+|---|---|---|---|
+| 1 (retried new expense drops the correction) | MEDIUM | HIGH | "Expense saved" while discarding the change is the scale's HIGH; the same class as R7 #2 and R3 #1. "Rare sequence" was asserted, not shown, on an app whose stated use is bad signal |
+| 7 (finalize locks numbers the treasurer hadn't seen) | MEDIUM | HIGH | The same class as R3 #3, already accepted as HIGH |
+| 13 (typing lost when the phone switches apps) | LOW | MEDIUM | The same mechanism as row 4 |
+
+Both HIGH rows were already fixed in this round. Added, having been left out of the table: **a lost reply, then the parent re-enters the expense from scratch, stores it twice** (bad-signal, MEDIUM), and **the add-key fix in row 2 still duplicated when the name was corrected or the page reloaded** (disposition auditor, MEDIUM). Both are fixed below. Accepted too: the headline "no reviewer rated anything HIGH" treated the readers' ratings as the verdict, which is the habit the audits keep naming; and the stop rule resting on our own ratings is a problem with the rule, recorded here as one, and taken to the human.
+
+**So round 9 had two HIGH findings, and a round 10 follows.**
+
+### First trial: peer agents before fixing
+
+The two new duplicate problems were the first to go through a step we're trialling with the human (temporary office memory 104): before any code, the author writes the problem plainly and a plan; two peers (Sonnet, Haiku) try to break the plan, and two others (Sonnet, Haiku), who never see it, propose their own fixes. Nobody writes code. The author decides and records where they went against the peers. Their answers are in round9/peer-*.md.
+
+**The author's plan:** catch near-duplicates on the server (same payer, amount and date; same name in the family or on the trip, in the last few minutes) and ask "this looks like one added N minutes ago, save anyway?"
+
+**What came back:** all four, independently, said the cause was the retry key belonging to the exact request instead of to the act of adding, and proposed the same fix: one key per add, kept through a reload, with a corrected retry fixing the first entry in place. Both critics showed the author's plan failed its own example: "Av" and "Ava" aren't the same name, so it would never fire, and fuzzy matching flags Ann and Anna, or a dad and son both called Michael. Its time window would have been shortest exactly when a parent had been offline longest, and it would have prompted on every pair of same-price snacks until parents tapped through without reading. They credited it with one case nothing else covers: two parents entering the same bill from two phones.
+
+**Decision:** the peers' fix, not the author's plan.
+- Adding a person, family or trip uses one key per add, kept for the tab for 10 minutes and dropped once the server answers. A corrected retry fixes the first entry, but only while nobody has touched it since (migration 0011 records how each looked when added), and, for a trip, only before any family is on it. Otherwise the parent is told to look at the list.
+- After a lost reply on adding a person, the reloaded screen is checked: "Rosa was added after all", with the name not offered again.
+- A new expense sent without a reply is remembered on the phone (local storage). On the trip screen, or on opening Add expense, the app says "Your last expense (Dinner, $45.00) did save", or puts it back in the form with the same key ("may not have saved: check it and save"), which can't add it twice.
+- **Went against the peers on:** nothing they agreed on. The Sonnet critic's narrower backstop (save, then flag "possible duplicate of Pat's $45, remove this one?") was not built. It's the only cover for two parents entering the same bill from two phones, so it's left for the human to weigh.
+
+Checks: every API script (round9b.mjs is new: a trip, family and person typo each fixed in place; a retry after someone else's edit refused) and browser checks with replies deliberately lost: "Rosa was added after all" with one Rosa; "Your last expense (Dinner, $45.00) did save" with one Dinner; a save that never reached the server came back in the form and saved once.
+
+Deploy note: migration 0011 failed silently on the first try, and the code was deployed in the same command anyway, so for about a minute the live code expected columns that didn't exist. The activity log shows nobody used the site in that window. The deploy order is now an office convention: migrate, confirm nothing is pending, then deploy.
+
+**Believed, and wrong:** "No reviewer rated anything HIGH" as a finding about the round, rather than about the reviewers' calibration. And the plan for the duplicates, quoted above.
