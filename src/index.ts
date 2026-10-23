@@ -367,6 +367,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const end = isDate(b.end_date) ? b.end_date : t.end_date;
       if (end < start) throw new HttpError(400, "Check the dates");
       const moved = start !== t.start_date || end !== t.end_date;
+      // A form sending dates names the dates it was opened with; a form opened before
+      // someone else changed them would otherwise put the old ones back.
+      const seenStart = b.start_date == null && b.end_date == null ? t.start_date : b.seen_start;
+      const seenEnd = b.start_date == null && b.end_date == null ? t.end_date : b.seen_end;
+      if (seenStart !== t.start_date || seenEnd !== t.end_date) throw stale();
       if (moved && tripDays(start, end) > MAX_TRIP_DAYS) throw new HttpError(400, `A trip can be at most ${MAX_TRIP_DAYS} days`);
       // Days outside new dates come off everyone's attendance and fencing days, so
       // no split keeps counting a day nobody can see or untick any more. The
@@ -376,7 +381,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const res = await env.DB.batch([
         // Only from the dates we read: two phones changing the dates at once can't each trim to a different range.
         env.DB.prepare("UPDATE tournaments SET name = ?4, location = ?5, start_date = ?1, end_date = ?2 WHERE id = ?3 AND status = 'open' AND deleted_at IS NULL AND start_date = ?6 AND end_date = ?7")
-          .bind(start, end, tid, str(b.name) || t.name, b.location == null ? t.location : str(b.location), t.start_date, t.end_date),
+          .bind(start, end, tid, str(b.name) || t.name, b.location == null ? t.location : str(b.location), seenStart, seenEnd),
         // The trims apply only if the dates above did.
         env.DB.prepare(`UPDATE families SET days = ${keep("families.days")} WHERE tournament_id = ?3 AND ${datesNow}`).bind(start, end, tid),
         env.DB.prepare(`UPDATE people SET days = ${keep("people.days")}, fencing_days = ${keep("people.fencing_days")}
@@ -441,10 +446,16 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   if ((m = path.match(/^\/tournaments\/(\d+)\/reopen$/)) && method === "POST") {
     const tid = Number(m[1]);
     await tournament(env, tid);
-    await env.DB.batch([
-      env.DB.prepare("DELETE FROM payments WHERE tournament_id = ?").bind(tid),
-      env.DB.prepare("UPDATE tournaments SET status = 'open', finalized_at = NULL, finalized_by = NULL WHERE id = ?").bind(tid),
+    // The screen warns about the ticks it can see; if another phone ticked more since,
+    // reopening would clear them unannounced.
+    const seen = Number((await body(req).catch(() => ({}))).ticked);
+    if (!Number.isInteger(seen)) throw stale();
+    const fewer = "(SELECT COUNT(*) FROM payments WHERE tournament_id = ?1 AND paid_at IS NOT NULL) <= ?2";
+    const res = await env.DB.batch([
+      env.DB.prepare(`DELETE FROM payments WHERE tournament_id = ?1 AND ${fewer}`).bind(tid, seen),
+      env.DB.prepare(`UPDATE tournaments SET status = 'open', finalized_at = NULL, finalized_by = NULL WHERE id = ?1 AND ${fewer}`).bind(tid, seen),
     ]);
+    if (!res[1].meta.changes) throw new HttpError(409, "Someone ticked off a payment since this screen loaded. Reload to see it before reopening.");
     await log(env, tid, name, "reopened the tournament; payments will be recalculated");
     return json({ ok: true });
   }
@@ -568,7 +579,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const can = `NOT EXISTS (SELECT 1 FROM expenses WHERE paid_by = ?1) AND ${OPEN3}`;
       const res = await env.DB.batch([
         // ?2 is the family id as text: the JSON key, not a number.
-        env.DB.prepare(`UPDATE expenses SET split = json_remove(split, '$."' || ?2 || '"') WHERE tournament_id = ?3 AND json_type(split, '$."' || ?2 || '"') IS NOT NULL AND ${can}`).bind(fid, String(fid), tid),
+        env.DB.prepare(`UPDATE expenses SET split = json_remove(split, '$."' || ?2 || '"'), rev = rev + 1 WHERE tournament_id = ?3 AND json_type(split, '$."' || ?2 || '"') IS NOT NULL AND ${can}`).bind(fid, String(fid), tid),
         env.DB.prepare(`DELETE FROM families WHERE id = ?1 AND ${can}`).bind(fid, null, tid),
       ]);
       if (!res[1].meta.changes) throw new HttpError(409, "This family paid for an expense or the trip was just finalized. Reload and check.");
@@ -618,8 +629,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         : b.days == null ? JSON.parse(p.days) : cleanDays(b.days, all);
       const fencer = b.is_fencer == null ? !!p.is_fencer : !!b.is_fencer;
       const wasFencing: string[] = JSON.parse(p.fencing_days);
-      const fencing = !fencer ? [] : (b.fencing_day != null ? cleanDays(flip(wasFencing, b.fencing_day, !!b.on), all)
-        : b.fencing_days == null ? (!p.is_fencer ? days : wasFencing) : cleanDays(b.fencing_days, all)).filter(d => days.includes(d));
+      // Unticking Fencer keeps their fencing days (nothing counts them while they're not a
+      // fencer), so ticking it again brings back the days picked, not every day.
+      const fencing = (!fencer ? wasFencing : b.fencing_day != null ? cleanDays(flip(wasFencing, b.fencing_day, !!b.on), all)
+        : b.fencing_days == null ? (!p.is_fencer && !wasFencing.length ? days : wasFencing) : cleanDays(b.fencing_days, all)).filter(d => days.includes(d));
       // Someone following the family takes its days as read, so those must still be its days.
       const famSame = "(SELECT days FROM families WHERE id = ?) = ?";
       const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?, days = ?, fencing_days = ?, own_days = ? WHERE id = ? AND days = ? AND fencing_days = ? AND ${OPEN} AND ${SAME_SPAN}${own ? "" : ` AND ${famSame}`}`).bind(
@@ -641,12 +654,22 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   if ((m = path.match(/^\/tournaments\/(\d+)\/expenses$/)) && method === "POST") {
     const tid = Number(m[1]);
     await openTournament(env, tid);
-    const e = await expenseInput(env, tid, await body(req));
+    const b = await body(req);
+    const e = await expenseInput(env, tid, b);
+    // The phone names each new expense; a save retried after its reply was lost finds
+    // the expense it already made instead of adding it twice.
+    const key = typeof b.client_key === "string" && /^[0-9a-f-]{36}$/.test(b.client_key) ? b.client_key : null;
+    const made = key && await env.DB.prepare("SELECT id FROM expenses WHERE client_key = ? AND tournament_id = ?").bind(key, tid).first<any>();
+    if (made) return json({ id: made.id }, 200);
     if (e.receipt_key && !(await env.RECEIPTS.head(e.receipt_key))) throw new HttpError(409, "That receipt upload has expired. Add the photo again.");
     const r = await env.DB.prepare(
-      `INSERT INTO expenses (tournament_id, description, vendor, date, category, basis, amount_cents, paid_by, split, receipt_key, receipt_type, created_at, created_by)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${OPEN} RETURNING id`)
-      .bind(tid, e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, tid).first<any>();
+      `INSERT INTO expenses (tournament_id, description, vendor, date, category, basis, amount_cents, paid_by, split, receipt_key, receipt_type, created_at, created_by, client_key)
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${OPEN} ON CONFLICT DO NOTHING RETURNING id`)
+      .bind(tid, e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, key, tid).first<any>();
+    if (!r && key) {                       // the same save, landing twice at once
+      const again = await env.DB.prepare("SELECT id FROM expenses WHERE client_key = ? AND tournament_id = ?").bind(key, tid).first<any>();
+      if (again) return json({ id: again.id }, 200);
+    }
     if (!r) throw closed();
     await log(env, tid, name, `added ${e.description}, $${(e.amount_cents / 100).toFixed(2)}`);
     return json({ id: r.id }, 201);
@@ -660,10 +683,14 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const b = method === "GET" ? {} : await body(req).catch(() => ({}));
     if (b.created_at != null && b.created_at !== old.created_at) throw new HttpError(409, "That expense was deleted on another phone. Reload to see the list.");
     // And the revision it opened: an editor left open can't save over a newer correction.
-    if ((method === "PATCH" || method === "DELETE") && b.rev !== old.rev)
+    const e = method === "PATCH" ? await expenseInput(env, old.tournament_id, b) : null;
+    if ((method === "PATCH" || method === "DELETE") && b.rev !== old.rev) {
+      // The same edit sent again because its reply was lost: it's already saved.
+      const same = e && b.rev === old.rev - 1 && (["description", "vendor", "date", "category", "basis", "amount_cents", "paid_by", "split", "receipt_key"] as const).every(k => (e as any)[k] === old[k]);
+      if (same) return json({ ok: true });
       throw new HttpError(409, "Someone changed this expense after you opened it. Go back and open it again to see their version.");
-    if (method === "PATCH") {
-      const e = await expenseInput(env, old.tournament_id, b);
+    }
+    if (method === "PATCH" && e) {
       // A new receipt must really be there: an editor left open from before someone
       // else replaced the receipt would otherwise point the expense at a deleted file.
       if (e.receipt_key && e.receipt_key !== old.receipt_key && !(await env.RECEIPTS.head(e.receipt_key)))

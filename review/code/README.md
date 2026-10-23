@@ -170,3 +170,63 @@ Pages loaded before this release get "this screen is out of date, reload" on the
 Checks: 17 unit tests; every API script in briefs/, now through stamp.mjs, which fills in tags and revisions the way the app does; revisions.mjs, new (the $80 correction stands against an older editor; a reused person id, reproduced, is refused); browser checks of the family screen, a stale expense editor and a PDF export; the blank-page receipt in pdf-lib directly.
 
 What this review says about the rounds before it is in the review-loop skill's evidence file (agent-office, "Briefs drift toward the answer").
+
+## Round 8, 2026-10-23: first run of the updated review-loop
+
+The skill was updated after the outside review (short briefs, reviewers may run the code, a whole-code reviewer every round). This round followed it. Outside reviewers launched with approval prompts off were blocked by the harness's safety check, so the user chose Claude agents instead, as the loop was first designed: two whole-code reviewers (Sonnet 5.5, Haiku 5.5), a fix auditor on ddd5fc4 (Sonnet), a money specialist (Haiku), and a disposition auditor on our own past ratings (Sonnet). Each code reviewer had its own runnable copy at ddd5fc4, holding only the test access code. Briefs (about 270 words, no function names) and predictions were committed before the run (692465b, PREDICTIONS-R8.md). Reports are in round8/.
+
+Cast note: the predictions were written for Codex, Grok, agy and opencode; the briefs did not change, the models did. Sonnet and Haiku share a lineage, so their agreement counts for less than agreement across vendors.
+
+| # | Finding | Reviewers (their rating) | Ours |
+|---|---|---|---|
+| 1 | Changing trip dates silently drops attendance. A stale trip-details form puts the old dates back, removing ticks on the newer days; and shortening drops days for good (re-extending doesn't restore them) with only a hint, so every expense is re-priced | Sonnet whole-code MEDIUM (ran it), Haiku whole-code HIGH (ran it) | HIGH: two reviewers on two models, both ran it, and a mistaken date change re-prices everything without anyone noticing |
+| 2 | Removing a family didn't bump expense revisions, so an old editor could hand the removed family's share to a new family that took its id | Fix auditor MEDIUM (ran), Haiku whole-code MEDIUM (ran), money LOW | MEDIUM (an old editor, a removal and an addition in sequence) |
+| 3 | A save retried after its reply was lost: a new expense was added twice; an edit was refused as "someone changed this" | Haiku whole-code MEDIUM (ran), Sonnet whole-code LOW, fix auditor LOW to MEDIUM (ran) | MEDIUM (visible and recoverable; venue wifi makes it real) |
+| 4 | A new-expense form didn't show a family added on another phone meanwhile, and the save charged them | Money MEDIUM (ran the math) | MEDIUM. Checked: only new expenses; an existing expense lists every family |
+| 5 | Unticking and re-ticking Fencer replaced the picked fencing days with every day | Haiku whole-code MEDIUM (ran) | MEDIUM (visible on the family screen) |
+| 6 | Reopening from a screen that hadn't seen new payment ticks cleared them without the warning | Sonnet whole-code LOW | MEDIUM (lost ticks, rare sequence; by the scale that is MEDIUM, not LOW) |
+| 7 | "12,50" was read as $1,250 | Sonnet whole-code LOW | LOW (edge-case input; shares show before saving) |
+| 8 | The draft PDF's expense table didn't add up when an expense had nobody sharing | Money LOW, Haiku whole-code LOW | LOW (drafts only) |
+
+Fixed, with migration 0009: the trip form sends the dates it opened with, and the server refuses a change from older ones; shortening asks first, naming who loses days and saying it can't be undone; removing a family bumps the revision of each expense it was in; a new expense carries a key from the phone, so a retry finds it (unique index), and an edit sent twice is accepted if it's identical to what's stored; before saving, the form checks the trip's families and redraws if they changed; a family the expense doesn't list shows as automatic, matching the money math; unticking Fencer keeps the days (only fencers' days count or show); reopen names the number of ticks it saw; "12,50" is twelve fifty; the PDF table totals its own column.
+
+Not fixed, for the human (judgement, not defects): adding a day to a family doesn't make its fencers fence it (money, LOW); Back discards a draft without asking and leaves an uploaded receipt behind (Haiku, LOW); a family added with no days gets the whole trip (Haiku, design). Left as known LOW: the tag is checked just before the write rather than in it (fix auditor); the PDF test-embed doubles the work on large receipts (fix auditor; unmeasured, which is the cost reader's job).
+
+Checks: 17 unit tests; every API script in briefs/ (round8.mjs is new; stamp.mjs now also names the dates a trip form opened with and the ticks a reopen saw); browser checks of the shorten confirmation, a family joining during a new expense, "12,50", and reopen.
+
+### The disposition audit, and our response
+
+The auditor's main finding holds: **we rated findings LOW because they were "visible" or "recoverable", which our own scale defines as MEDIUM**, and the same mechanism was rated differently across rounds (a save landing over typed input: HIGH in round 3, MEDIUM every time after). We accept these re-ratings:
+
+| Row | Was | Now |
+|---|---|---|
+| R3 #11, R3 #13, R5 #4, R6 #5, R7 #4, R7 #5, R7 #6 | LOW | MEDIUM |
+| R7 #1 (letters typed into the wrong person's name), R7 #2 (an edit lost when a save lands) | MEDIUM | HIGH, consistent with R3 #1 |
+| R3 #3 (treasurer change racing finalize) | MEDIUM | HIGH, as two of its three reviewers said |
+| Round 4's note on family and person id reuse | LOW, unfixed | MEDIUM (fixed since, EFC-03) |
+
+Consequence: rated consistently, **round 7 had two HIGH findings, and the reviews should not have stopped there.** The outside review that followed found a HIGH, which fits.
+
+Not accepted as stated: the rejection of agy's round-3 claim (typing clears the browser's "changed" flag). It was tested, not reasoned: in a real browser, with the family save slowed to 2.5 seconds, text typed during the reload was saved on Done. The first attempt seemed to confirm it, until the cause turned out to be two saves slowed at once in our harness. The README should have said how it was tested; now it does.
+
+### Predictions, against what happened
+
+- Fix auditor: predicted the family-removal revision gap, the tag checked before the write, the PDF double work. **All three came back.** Missed: a retried save after a lost reply.
+- HIGH 0 or 1, from a whole-code reviewer: **1, from both whole-code reviewers.** Predicted area (login, AI receipts, practice trip) **wrong**: it was trip dates.
+- MEDIUM 3 to 6: **5.**
+- "The money specialist finds nothing wrong in the math, only in what a screen shows": **half right.** The math held; finding 4 charged a family the screen didn't show.
+- "The whole-code reviewers overlap on at most one finding": **right**, finding 1 (from two directions), and finding 3 partly.
+- "The disposition auditor contests one or two ratings": **wrong, badly.** It contested fourteen, and showed the stopping decision rested on them.
+- "Running the app means more findings with a reproduction": **right.** Most came with one; the money specialist didn't start the app.
+
+**Believed, and wrong:** "Round 7 found no HIGH, so the reviews stop here." And from round 4: "Not fixed, LOW: families and people ids can be reused the same way as expenses, but only a family screen left open on a deleted family could hit it."
+
+### Mistakes the next author will make
+
+The human will recognise these:
+1. Calling a finding LOW because "the user can see it." Visible and recoverable is MEDIUM.
+2. Fixing the symptom a reviewer named rather than the mechanism under it: receipt checks in rounds 6 and 7 instead of expense revisions.
+3. Ending the reviews on the strength of their own ratings, without running the disposition auditor first.
+4. Briefs that get longer and name functions each round.
+
+Round 8 found a HIGH, so a round 9 follows.

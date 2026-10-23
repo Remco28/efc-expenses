@@ -577,9 +577,17 @@ function tabFamilies(el) {
   const te = document.getElementById("tripedit");
   if (te) te.onsubmit = async ev => {
     ev.preventDefault();
+    const start = document.getElementById("es").value, end = document.getElementById("ee").value;
+    // Shortening the trip takes the dropped days off everyone, for good: say who, and ask.
+    const gone = d => d < start || d > end;
+    const lose = S.trip.families.flatMap(f => f.people).filter(p => p.days.some(gone));
+    const dated = S.trip.expenses.filter(e => e.date && gone(e.date));
+    if ((lose.length || dated.length) && !(await confirmSheet("Shorten the trip?",
+      `${lose.length ? `${esc(lose.slice(0, 3).map(p => p.name).join(", "))}${lose.length > 3 ? ` and ${lose.length - 3} more` : ""} will lose the days outside the new dates, and the shares change. ` : ""}${dated.length ? `${plural(dated.length, "expense is", "expenses are")} dated outside them. ` : ""}Moving the dates back later won't put those days back.`,
+      "Shorten the trip"))) return;
     await act(() => api(`/tournaments/${t.id}`, { method: "PATCH", body: {
       name: document.getElementById("en").value, location: document.getElementById("el").value,
-      start_date: document.getElementById("es").value, end_date: document.getElementById("ee").value } }), "Saved");
+      start_date: start, end_date: end, seen_start: t.start_date, seen_end: t.end_date } }), "Saved");
     refresh("families");
   };
 }
@@ -799,7 +807,7 @@ function renderDay(date) {
   const there = realFamilies().map(f => ({ f, ppl: f.people.filter(p => p.days.includes(date)) }));
   const present = there.filter(x => x.ppl.length), absent = there.filter(x => !x.ppl.length);
   const nPeople = present.reduce((n, x) => n + x.ppl.length, 0);
-  const nFence = present.reduce((n, x) => n + x.ppl.filter(p => p.fencing_days.includes(date)).length, 0);
+  const nFence = present.reduce((n, x) => n + x.ppl.filter(p => p.is_fencer && p.fencing_days.includes(date)).length, 0);
   app.innerHTML = `${bar({ back: `#/t/${t.id}?tab=families`, title: "Check a day", sub: t.name })}
     <div class="wrap"><div class="stack">
       <div class="days">${days.map(d => `<a class="daylink ${d === date ? "on" : ""}" href="#/t/${t.id}/day/${d}" ${d === date ? 'aria-current="page"' : ""}>${esc(dayShort(d))}</a>`).join("")}</div>
@@ -808,7 +816,7 @@ function renderDay(date) {
         <div class="muted small">${nFence} fencing · meals that day are split among these ${nPeople}</div></div>
       <div class="card ledger"><h2>There this day</h2>
         ${present.map(({ f, ppl }) => `<a class="famrow" href="#/t/${t.id}/f/${f.id}"><div class="grow"><div class="fam-name">${esc(f.name)} <span class="faint small" style="font-weight:500">${ppl.length}</span></div>
-          <div class="fam-sum day-ppl">${ppl.map(p => `<span>${esc(p.name)}${p.fencing_days.includes(date) ? ` <span class="chip fencer">fencing</span>` : ""}</span>`).join("")}</div></div>${icon("chev")}</a>`).join("") || `<p class="faint">Nobody is marked as there.</p>`}
+          <div class="fam-sum day-ppl">${ppl.map(p => `<span>${esc(p.name)}${p.is_fencer && p.fencing_days.includes(date) ? ` <span class="chip fencer">fencing</span>` : ""}</span>`).join("")}</div></div>${icon("chev")}</a>`).join("") || `<p class="faint">Nobody is marked as there.</p>`}
       </div>
       ${absent.length ? `<div class="card"><h2>Not there this day</h2><p class="muted small" style="margin-top:-4px">If one of these was actually there, tap it to fix their days.</p>
         ${absent.map(({ f }) => `<a class="famrow" href="#/t/${t.id}/f/${f.id}"><div class="grow"><div class="fam-name">${esc(f.name)}</div></div>${icon("chev")}</a>`).join("")}</div>` : ""}
@@ -834,7 +842,7 @@ function renderEditor(id) {
     // Families added since this expense was entered count automatically too.
     const split = e ? { ...Object.fromEntries(families.filter(f => f.kind !== "staff").map(f => [f.id, e.basis === "custom" ? 0 : null])), ...e.split } : {};
     S.draft = e ? { ...e, split, amount: (e.amount_cents / 100).toFixed(2), basisTouched: e.basis !== CATEGORIES[e.category]?.basis, splitTouched: true, catTouched: true, dateTouched: true }
-      : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "person", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, basisTouched: false };
+      : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "person", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, basisTouched: false, client_key: crypto.randomUUID() };
     if (!e) S.draft.split = defaultSplit("person", families);
   }
   const d = S.draft;
@@ -911,7 +919,11 @@ function followCategory(d) {
   d.split = { ...defaultSplit(usual, S.trip.families), ...out };
 }
 function resetSplit() { S.draft.split = defaultSplit(S.draft.basis, S.trip.families); drawSplit(); }
-function cents(v) { const n = Math.round(parseFloat(String(v).replace(/[$,\s]/g, "")) * 100); return Number.isFinite(n) ? n : 0; }
+function cents(v) {
+  let s = String(v).replace(/[$\s]/g, "");
+  s = /^\d+,\d{2}$/.test(s) ? s.replace(",", ".") : s.replace(/,/g, "");   // "12,50" is twelve fifty; "1,250" is 1250
+  const n = Math.round(parseFloat(s) * 100); return Number.isFinite(n) ? n : 0;
+}
 
 function drawSplit() {
   const d = S.draft, families = realFamilies();
@@ -924,9 +936,10 @@ function drawSplit() {
   const s = shares({ ...d, amount_cents: amount }, families);
   const unit = n => plural(n, BASES[d.basis].unit, BASES[d.basis].units);
   el.innerHTML = `<div class="incl">${families.map(f => {
-    const set = d.split[f.id], auto = autoUnits(d.basis, f, d.date);
-    const away = set == null && !auto && String(f.id) in d.split;    // automatic, but nobody there
-    const inc = String(f.id) in d.split && set !== 0 && !away;
+    // Not listed on the expense means automatic (0 on a custom split), the same as the money math.
+    const set = String(f.id) in d.split ? d.split[f.id] : d.basis === "custom" ? 0 : null, auto = autoUnits(d.basis, f, d.date);
+    const away = set == null && !auto;    // automatic, but nobody there
+    const inc = set !== 0 && !away;
     const n = s.units[f.id] || 0;
     return `<div class="r ${inc && n ? "" : "off"}"><input type="checkbox" data-inc="${f.id}" ${inc ? "checked" : ""} aria-label="Include the ${esc(f.name)} family">
       <span class="nm">${esc(f.name)}</span>
@@ -1053,8 +1066,18 @@ async function saveExpense() {
   if (!d.paid_by) { document.getElementById("paid").scrollIntoView({ block: "center" }); return toast("Pick the family that paid"); }
   const s = shares({ ...d, amount_cents }, S.trip.families);
   if (!s.total) return toast("Include at least one family");
+  // A family added or removed on another phone since the form opened would be charged
+  // or dropped without this form showing it: catch up, show it, and let them check.
+  let fresh; try { fresh = await api(`/tournaments/${t.id}`); } catch (e) { return toast(e.message); }
+  const ids = tr => tr.families.map(f => f.id).sort().join();
+  if (S.draft !== d) return;
+  if (ids(fresh) !== ids(S.trip)) {
+    S.trip = fresh;
+    renderEditor(d.id || null);
+    return toast("A family joined or left the trip since you opened this. Check who's sharing, then save again.");
+  }
   const body = { description: d.description, vendor: d.vendor, date: d.date, category: d.category, basis: d.basis,
-    amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at, rev: d.rev };
+    amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at, rev: d.rev, client_key: d.client_key };
   // The form is frozen while it sends: a change made meanwhile would be thrown away
   // when the save lands. Moving to another screen unfreezes it (see show()).
   document.getElementById("save").disabled = true;
@@ -1299,7 +1322,7 @@ app.addEventListener("click", async ev => {
       case "reopen": {
         const paid = S.trip.payments.some(x => x.paid_at);
         if (!(await confirmSheet("Reopen this trip?", paid ? "Payments already ticked off will be cleared, and everything is recalculated when you finalize again." : "You can change expenses again, then finalize when you're done.", "Reopen", paid))) return;
-        await act(() => api(`/tournaments/${t.id}/reopen`, { method: "POST" }), "Trip reopened"); return refresh("settle");
+        await act(() => api(`/tournaments/${t.id}/reopen`, { method: "POST", body: { ticked: S.trip.payments.filter(x => x.paid_at).length } }), "Trip reopened"); return refresh("settle");
       }
       case "toggle-paid": {
         const x = S.trip.payments.find(p => p.id === id);

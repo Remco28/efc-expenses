@@ -2,9 +2,19 @@
 // and an expense's revision and creation time, as they are now. A test that sends
 // its own (to play a stale screen) keeps them.
 export async function stamp(B, cookie, p, m, b) {
+  if (m === "GET" || b instanceof Uint8Array) return b;
+  const H = { headers: { cookie } };
+  // Trip details name the dates the form opened with; reopen names the ticks it saw.
+  const t = /^\/tournaments\/(\d+)(\/reopen)?$/.exec(p);
+  if (t && (t[2] ? m === "POST" : m === "PATCH")) {
+    const d = await (await fetch(`${B}/tournaments/${t[1]}`, H)).json();
+    if (!d.tournament) return b;
+    return t[2] ? { ticked: d.payments.filter(x => x.paid_at).length, ...(b || {}) }
+      : { seen_start: d.tournament.start_date, seen_end: d.tournament.end_date, ...(b || {}) };
+  }
   const x = /^\/(families|people|expenses)\/(\d+)(\/people)?$/.exec(p);
-  if (!x || m === "GET" || b instanceof Uint8Array) return b;
-  const H = { headers: { cookie } }, id = Number(x[2]);
+  if (!x) return b;
+  const id = Number(x[2]);
   const list = await (await fetch(B + "/tournaments", H)).json();
   for (const t of list.trips || list) {
     const d = await (await fetch(`${B}/tournaments/${t.id}`, H)).json();

@@ -197,7 +197,7 @@ export async function exportPdf(trip) {
     { label: "Split", w: 104, f: e => BASES[e.basis].label, sub: e => units(perExpense[e.id].total, e.basis) },
     { label: "Receipt", w: 50, f: e => rnum.get(e.id) || "none", color: e => rnum.has(e.id) ? C.ink : C.grey },
     { label: "Amount", w: CW - 442, align: "right", f: e => money(e.amount_cents), bold: true },
-  ], expenses, { totals: ["", `${expenses.length} expenses`, "", "", "", money(total)], rowH: 22 });
+  ], expenses, { totals: ["", `${expenses.length} expenses`, "", "", "", money(expenses.reduce((n, e) => n + e.amount_cents, 0))], rowH: 22 });   // the column's own sum
 
   // ---------- family statements ----------
   runningTitle = "Family statements";
@@ -255,7 +255,7 @@ export async function exportPdf(trip) {
       if (i % 2) rect(M, y - 5, CW, 16, C.zebra);
       text(`${p.fam}: ${p.name}${p.is_fencer ? " (fencer)" : ""}`, M + 7, y, { size: 8.5, w: 160 });
       days.forEach((d, j) => {
-        const mark = p.fencing_days.includes(d) ? "F" : p.days.includes(d) ? "x" : "-";
+        const mark = p.is_fencer && p.fencing_days.includes(d) ? "F" : p.days.includes(d) ? "x" : "-";
         text(mark, M + 170 + j * dayW, y, { f: mark === "F" ? bold : font, size: 8.5, color: mark === "-" ? C.line : mark === "F" ? C.navy : C.ink2, w: dayW, align: "center" });
       });
       y -= 16;

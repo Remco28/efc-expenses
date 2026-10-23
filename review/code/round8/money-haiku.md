@@ -1,0 +1,21 @@
+Money review of the EFC app at ddd5fc4 (copy: /tmp/claude-1000/-home-frank-Dev-agent-office/5c8f63e1-975c-455f-891c-a49fa0bbcc0b/scratchpad/rl8/opencode).
+
+Method: I read public/split.js, src/index.ts (all money writes, finalize, payments, treasurer, family/people/expense endpoints), public/app.js (split form, editor, Settle, Treasurer, PDF-facing screens) and public/pdf.js, plus the migrations. I ran the unit tests (17/17 pass). I did not start the app or drive the API. Findings below are reasoned from the code, except F1, where I ran split.js directly.
+
+Overall: the core math is sound. Shares use largest-remainder rounding and always sum to the amount. Balances net to zero. The treasurer plan's pot ends at exactly the treasurer family's balance. Finalize is fingerprint-guarded and the payments are frozen server-side. Payment ticks check the payment's identity. Staff are excluded from shares but still get paid back. I found no HIGH issue.
+
+F1. MEDIUM. A family added while someone else has an expense form open is charged a share the form says it is not sharing.
+- Steps: Parent A opens "Add expense" (the form's `S.draft` blocks route refreshes, so `S.trip.families` is frozen). Parent B adds family C on another phone. A ticks the amount, picks the payer and leaves the split as it is, then saves.
+- The form was built with `defaultSplit`, which only has keys for families that existed when it opened. The row for C is therefore `inc=false`, so drawSplit shows "Not sharing" and the row is greyed out. But the total line ("split between N families") and the server's `unitsFor` both count C as automatic, and C is charged.
+- I confirmed the math with split.js: with a form split of {1:null, 2:null} and C present, shares come out as {1:3000, 2:3000, 3:3000}, so C pays. A sees "Not sharing" on the form, and C is charged. It is recoverable (C appears on the Settle breakdown and A can edit the expense), but it is a silent wrong result for a family.
+- Fix idea: in drawSplit, treat a family missing from d.split as automatic (show its real count), or refresh families before save and tell the user the list changed.
+
+F2. LOW. Expense split keys are family ids, and ids can be reused. Family ids are reused when the highest-id family is deleted and another is added (no AUTOINCREMENT). The family DELETE does json_remove on expenses, but it does not bump `rev`, so a stale expense editor that still holds the old key passes the rev check. If it saves with that key as 0 (unticked) or as a hand-set count, the new family inherits that setting on that expense. Needs a family deletion, a new family and a stale editor all in the same window. Reasoned, not run.
+
+F3. LOW. The draft PDF's expense table does not add up. In pdf.js the "Shared expenses" table lists every expense, but its total cell is `money(total)`, where `total` is the sum of owed shares, which skips unsplit expenses. On a DRAFT with an unsplit expense, the amounts column does not sum to the total shown. The Settle screen does flag unsplit expenses, and final PDFs cannot contain them, so this is draft-only. Reasoned.
+
+F4. LOW (judgement). Adding a day to a family does not give existing fencers that day as a fencing day. In the PATCH /families days update, fencing_days is only filtered down (`WHERE value IN days`), never extended. A new fencer, by contrast, starts fencing every day they are there (the POST /people comment says so). So a fencer added to a family day after the fact is there but not fencing, and the coach-stay fencer-day count is one lower until someone ticks it. This is not a wrong number, since the form shows the state, but it is inconsistent with the stated default. Reasoned.
+
+Checked and not a problem: payment ticks (409 on identity mismatch); finalize vs reopen; the treasurer's own family (skipped in the plan, and the pot matches its balance); FK SET NULL on the treasurer's family; expense amount bounds; the rev and created_at guards on expense PATCH and DELETE; the family-days batch ordering; and the split-form rules for custom basis and for unticking.
+
+Nothing was changed in the copy. The only file I added (a scratch .mjs in the session scratchpad, outside the copy) has been deleted.
