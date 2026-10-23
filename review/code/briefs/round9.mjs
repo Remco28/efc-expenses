@@ -30,7 +30,8 @@ const some = (await call(`/families/${F}/people`, "POST", { name: "Some", is_fen
 await call(`/people/${some}`, "PATCH", { fencing_day: D[1], on: false });
 await call(`/families/${F}`, "PATCH", { day: D[2], on: true });
 const pp = (await get(t2)).families[0].people, P = id => pp.find(p => p.id === id).fencing_days.join();
-ok(P(all) === D.join() && P(some) === [D[0], D[2]].filter(x => x !== D[2]).join(), `adding a day: everyday fencer fences it (${P(all)}); picked-days fencer keeps their pick (${P(some)})`);
+// (since round 10's rest days: a day they were never there for is fenced, the rested day stays rested)
+ok(P(all) === D.join() && P(some) === [D[0], D[2]].join(), `adding a day: everyday fencer fences it (${P(all)}); picked-days fencer keeps the rested day rested (${P(some)})`);
 // 3. finalize refuses numbers the screen didn't see
 await call(`/tournaments/${t2}/treasurer`, "PUT", { treasurer_name: "T", treasurer_family_id: F });
 const seen = Math.max(0, ...(await get(t2)).activity.map(a => a.id));

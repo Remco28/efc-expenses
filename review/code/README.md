@@ -349,3 +349,47 @@ The open question above went through a design loop: Frank chose the small direct
 Checks: every API script (round10.mjs is new; round9b.mjs, which tested the removed corrections, is gone; round9.mjs now expects "already added") and browser checks with the signal cut: held then sent on reopening (once, under the right name); reply lost with the signal staying cut, waiting card shown, sent once when it came back; a wifi sign-in page not taken as saved; Remove; hand-set shares refused offline and, after a lost reply, a corrected resave told the first version stands (one expense); a waiting expense refused after finalizing shows "Couldn't send" and the trip list count; Ava's lost add then Ben: Ava, Ben, one each, and a retried Cara made once.
 
 **Believed, and wrong:** "Holding the expense is the whole fix" — after holding, the app went to the trip screen, which couldn't load without a signal, so the waiting expense couldn't be seen. Found in the browser check, not by any critic. Also found there: Remove redrew by reloading (which needs a signal), and an older bug, the Add person button stayed disabled after a lost reply whose reload also failed.
+
+## Round 10 (round 3 of the new method)
+
+Reviewed 6cc7e4d: the round-9 follow-up and the new saving on a bad connection. Cast as round 9: two whole-code reviewers (Sonnet, Haiku), a fix auditor on 4719bbd..6cc7e4d (Sonnet), a bad-signal reviewer (Haiku). Reports in round10/. No reader rated anything HIGH.
+
+| # | Finding | Found by (their rating) | Ours | Done |
+|---|---|---|---|---|
+| 1 | A family day taken off and put back loses a fencer's picked fencing ticks for that day; per-fencer-day costs shift silently | whole-code Sonnet (MEDIUM, ran it) | **HIGH**: a realistic tap (a mistake, then undone), a wrong share, nobody told | Fixed: rest days (below), after two peer passes |
+| 2 | Round 9's "every-day fencer fences an added day" was applied to family days only, not to a person's own days or a switch back to the family's | fix auditor (MEDIUM, ran it) | MEDIUM: same mechanism as 1, on a path few people use (own days) | Fixed by the same change |
+| 3 | A family added without its days set counts for every day, including days before it arrived | whole-code Haiku (MEDIUM, ran it) | MEDIUM | Not fixed: "every day" is the default on purpose, the next screen is the day picker, and "from today" would be wrong for the treasurer entering families afterwards. For Frank to weigh |
+| 4 | A hand-set expense that got no answer is lost if the parent leaves the form | bad-signal (MEDIUM) | MEDIUM | Fixed: kept, and shown under "Waiting to send" as "Not saved: it needs a signal. Tap to finish it" |
+| 5 | A refused waiting expense can't be opened to copy, though design v4 says it can | bad-signal (MEDIUM) | MEDIUM | Fixed: "Open it to fix" puts it in the form as a new expense; saving it clears the refused one |
+| 6 | Retrying an edit after a lost reply blames "someone" else | bad-signal (LOW, ran it) | LOW | Reworded: "on another phone or by an earlier save of yours" |
+| 7 | Deleting with an expired login shows an empty message instead of the login screen | fix auditor (LOW) | LOW | Fixed |
+| 8 | A receipt the AI can't read now says "the connection dropped" | fix auditor (LOW) | LOW | Fixed: "Couldn't read the receipt just now. Fill in the form by hand." |
+| 9 | After an unsure add that did land, adding another identical "Alex" in the same family is answered "already added" | fix auditor (LOW) | LOW | Not fixed: that is the duplicate guard working; two identical names in one family, right after an unsure add, is rarer than the duplicate it prevents |
+| 10 | A draft stays kept after leaving the form for a family or day screen | fix auditor (LOW) | LOW | Fixed: every way out of the form drops it, except an unsent hand-set expense (row 4) |
+| 11 | Finalize reads "what this screen saw" after the confirm sheet, so a waiting expense sent meanwhile on the same phone isn't caught | fix auditor (LOW) | LOW | Fixed: read before the sheet opens |
+| 12 | Finalize's activity check can miss a change in the milliseconds between its write and its log line | whole-code Sonnet (LOW, reasoned) | LOW | Not fixed: a window of milliseconds; the fingerprint still covers money changed before the batch; reopenable |
+
+### Peers before fixing row 1
+
+The fix changes what is stored, so it went through the trial step (round10/fencing-problem.md, peer-*.md). Pass 1: two critics on the author's plan (stop trimming fencing days; show only the overlap; keep the every-day rule everywhere), two blind solvers. All four agreed on the core; both blind solvers proposed it independently. All four found the weak spot: the every-day rule guesses intent from the lists, so a deliberate rest day, after its day goes off and on, looks like "fences every day" and gets ticked. Plan v2 removed the guess: **a person stores the days they rest, not the days they fence**; fencing days are their days less their rest days, worked out in one place (loadTrip, which finalize uses too). Pass 2 (two fresh critics): holds, with details: the person update's guard must check rest days (it does), a full fencing list replaces rest days only within their days, the fingerprint counts only rest days within their days, lists stored sorted.
+
+Built: migration 0012 (rest_days, filled from today's lists; checked on old-style rows: a picked-days fencer, a non-fencer, a fencer with no days, a non-fencer with remembered picks). Family-day, own-day and trip-date changes no longer touch fencing at all; the every-day rule is gone. Behaviour change, stated: a fencer who rests some days, given a day they were never there for, fences it (as a new fencer does). A fencer with no fencing days at all is the extreme of that: a day added is fenced. Rest days outside the trip are kept, so a day rested before a shorten comes back rested if the trip is lengthened again.
+
+Checks: every API script (round10.mjs gained the fencing cases; round9.mjs's picked-days expectation updated to the stated change; round3's "a parent fences no days" caught non-fencers showing fencing days during the build, fixed), and browser checks for rows 4 and 5.
+
+### Predictions, against what happened
+
+- **HIGH 1: right in number, wrong in place.** I expected it in the new waiting list; it was in fencing days, code from round 9.
+- **MEDIUM 3 to 6: right** (4: rows 2 to 5), and mostly in the new code, as predicted (rows 4, 5).
+- **The fix auditor finds one thing the saving change broke: right**, of the kind guessed ("an error message changed meaning"): row 8, and row 7.
+- **Whole-code overlap at most one: right**, none.
+- **A reader re-reports something chosen on purpose: wrong.** None did. Naming the design's limits in the brief may have helped.
+- The disposition auditor: below.
+
+**Believed, and wrong:** that the build matched design v4. I dropped "open a refused item to copy it" during the build (a pass-3 critic suggested it) without changing the design, and a reviewer held the code to the design. And round 9's "a fencer who fences every day gets an added day": true for one path out of three.
+
+### Mistakes the next author will make
+
+1. A rule applied on the path where the bug was found, and not on the other paths that change the same data (row 2; also round 9's row 9).
+2. Cutting something from a design while building, without changing the design.
+3. Storing a list trimmed to another list, so an undo can't get back what the trim threw away (row 1).

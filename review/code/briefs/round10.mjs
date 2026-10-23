@@ -43,3 +43,33 @@ r = await raw("/no-such-route", "POST", {});
 ok(r.s === 404 && r.d.route === "unknown", "an unknown route says so");
 r = await raw("/tournaments/999999/expenses", "POST", { ...ex, client_key: crypto.randomUUID() });
 ok(r.s === 404 && r.d.route !== "unknown", "a missing trip is a refusal, not an unknown route");
+// fencing days: rest days are remembered, so a day put back comes back as it was
+{
+  const D3 = ["2028-06-02", "2028-06-03", "2028-06-04"];
+  const t3 = (await call("/tournaments", "POST", { name: "Fence", start_date: D3[0], end_date: D3[2] })).d.id;
+  const L = (await call(`/tournaments/${t3}/families`, "POST", { name: "Lee" })).d.id;
+  const pick = (await call(`/families/${L}/people`, "POST", { name: "Pick", is_fencer: true })).d.id;
+  const all = (await call(`/families/${L}/people`, "POST", { name: "All", is_fencer: true })).d.id;
+  const own = (await call(`/families/${L}/people`, "POST", { name: "Own", is_fencer: true })).d.id;
+  const fd = async id => (await get(t3)).families[0].people.find(p => p.id === id).fencing_days.join();
+  await call(`/people/${pick}`, "PATCH", { fencing_day: D3[2], on: false });            // rests Sun
+  await call(`/families/${L}`, "PATCH", { day: D3[1], on: false });
+  await call(`/families/${L}`, "PATCH", { day: D3[1], on: true });
+  ok(await fd(pick) === D3.slice(0, 2).join(), `Sat off and on keeps Pick's Sat fencing and Sun rest (${await fd(pick)})`);
+  ok(await fd(all) === D3.join(), "an every-day fencer still fences all three");
+  await call(`/people/${pick}`, "PATCH", { fencing_day: D3[1], on: false });            // rests Sat too
+  await call(`/families/${L}`, "PATCH", { day: D3[1], on: false });
+  await call(`/families/${L}`, "PATCH", { day: D3[1], on: true });
+  ok(await fd(pick) === D3[0], `a rested Sat stays rested after Sat off and on (${await fd(pick)})`);
+  // own days: an every-day fencer with a day added to their own days fences it
+  await call(`/families/${L}`, "PATCH", { day: D3[2], on: false });
+  await call(`/people/${own}`, "PATCH", { own_day: D3[2], on: true });
+  ok(await fd(own) === D3.join(), `an own day added is fenced (${await fd(own)})`);
+  await call(`/people/${own}`, "PATCH", { own_days: false });
+  ok(await fd(own) === D3.slice(0, 2).join(), "back to the family's days");
+  await call(`/families/${L}`, "PATCH", { day: D3[2], on: true });
+  ok(await fd(own) === D3.join(), "and the family's day added back is fenced");
+  // unticking Fencer keeps the picks
+  await call(`/people/${pick}`, "PATCH", { is_fencer: false }); await call(`/people/${pick}`, "PATCH", { is_fencer: true });
+  ok(await fd(pick) === D3[0], "re-ticking Fencer brings back the picks");
+}

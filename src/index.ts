@@ -120,7 +120,7 @@ async function purgeExpired(env: Env) {
 // Everything a trip's money depends on, as one string, computed by the database.
 const FINGERPRINT_SQL = `
   (SELECT COALESCE(group_concat(x, ';'), '') FROM (SELECT id || '|' || amount_cents || '|' || paid_by || '|' || basis || '|' || COALESCE(date, '') || '|' || split AS x FROM expenses WHERE tournament_id = ? ORDER BY id))
-  || '#' || (SELECT COALESCE(group_concat(x, ';'), '') FROM (SELECT p.id || '|' || p.days || '|' || p.fencing_days || '|' || p.is_fencer AS x FROM people p JOIN families f ON f.id = p.family_id WHERE f.tournament_id = ? ORDER BY p.id))
+  || '#' || (SELECT COALESCE(group_concat(x, ';'), '') FROM (SELECT p.id || '|' || p.days || '|' || (SELECT COALESCE(group_concat(r.value), '') FROM json_each(p.rest_days) r WHERE r.value IN (SELECT value FROM json_each(p.days))) || '|' || p.is_fencer AS x FROM people p JOIN families f ON f.id = p.family_id WHERE f.tournament_id = ? ORDER BY p.id))
   || '#' || (SELECT COALESCE(group_concat(x, ';'), '') FROM (SELECT id || '|' || kind AS x FROM families WHERE tournament_id = ? ORDER BY id))
   || '#' || (SELECT COALESCE(treasurer_family_id, '') || '|' || COALESCE(treasurer_name, '') FROM tournaments WHERE id = ?)`;
 async function fingerprint(env: Env, tid: number): Promise<string> {
@@ -173,7 +173,12 @@ async function loadTrip(env: Env, tid: number) {
     env.DB.prepare("SELECT * FROM payments WHERE tournament_id = ? ORDER BY direction, amount_cents DESC").bind(tid),
     env.DB.prepare("SELECT * FROM activity WHERE tournament_id = ? ORDER BY id DESC LIMIT 50").bind(tid),
   ]);
-  const people = (ppl.results as any[]).map(p => ({ ...p, is_fencer: !!p.is_fencer, own_days: !!p.own_days, days: JSON.parse(p.days), fencing_days: JSON.parse(p.fencing_days) }));
+  // Fencing days are the days they're there, less the days they rest. Every screen, the
+  // money and finalize read them from here.
+  const people = (ppl.results as any[]).map(({ fencing_days: _, ...p }) => {
+    const days: string[] = JSON.parse(p.days), rest: string[] = JSON.parse(p.rest_days);
+    return { ...p, is_fencer: !!p.is_fencer, own_days: !!p.own_days, days, fencing_days: p.is_fencer ? days.filter(d => !rest.includes(d)) : [] };
+  });
   const families = (fam.results as any[]).map(f => ({ ...f, days: JSON.parse(f.days), people: people.filter(p => p.family_id === f.id) }));
   const expenses = (exp.results as any[]).map(e => ({ ...e, split: JSON.parse(e.split) }));
   return { tournament: t, families, expenses, payments: pay.results, activity: act.results };
@@ -244,8 +249,8 @@ async function resetSandbox(env: Env, req: Request, tid: number, name: string) {
     const famDays = [...new Set(people.flatMap(([, , days]: [string, number, string[], string[]]) => days))].sort();
     stmts.push(env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes, days) VALUES (?, ?, ?, ?)").bind(tid, fname, pay, JSON.stringify(famDays)));
     for (const [pn, fencer, days, fdays] of people as [string, number, string[], string[]][])
-      stmts.push(env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, fencing_days, own_days) VALUES (${famId}, ?, ?, ?, ?, ?)`)
-        .bind(tid, fname, pn, fencer, JSON.stringify(days), JSON.stringify(fdays), days.length === famDays.length ? 0 : 1));
+      stmts.push(env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, rest_days, own_days) VALUES (${famId}, ?, ?, ?, ?, ?)`)
+        .bind(tid, fname, pn, fencer, JSON.stringify(days), JSON.stringify(fencer ? days.filter(d => !fdays.includes(d)) : []), days.length === famDays.length ? 0 : 1));
   }
   for (const [sname, role, pay] of SANDBOX.staff || [])
     stmts.push(env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes, days, kind, role) VALUES (?, ?, ?, '[]', 'staff', ?)").bind(tid, sname, pay, role));
@@ -386,7 +391,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const seenEnd = b.start_date == null && b.end_date == null ? t.end_date : b.seen_end;
       if (seenStart !== t.start_date || seenEnd !== t.end_date) throw stale();
       if (moved && tripDays(start, end) > MAX_TRIP_DAYS) throw new HttpError(400, `A trip can be at most ${MAX_TRIP_DAYS} days`);
-      // Days outside new dates come off everyone's attendance and fencing days, so
+      // Days outside new dates come off everyone's attendance, so
       // no split keeps counting a day nobody can see or untick any more. The
       // database trims each list as it stands, so a tap landing meanwhile is kept.
       const datesNow = "EXISTS (SELECT 1 FROM tournaments WHERE id = ?3 AND status = 'open' AND deleted_at IS NULL AND start_date = ?1 AND end_date = ?2)";
@@ -397,7 +402,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
           .bind(start, end, tid, str(b.name) || t.name, b.location == null ? t.location : str(b.location), seenStart, seenEnd),
         // The trims apply only if the dates above did.
         env.DB.prepare(`UPDATE families SET days = ${keep("families.days")} WHERE tournament_id = ?3 AND ${datesNow}`).bind(start, end, tid),
-        env.DB.prepare(`UPDATE people SET days = ${keep("people.days")}, fencing_days = ${keep("people.fencing_days")}
+        env.DB.prepare(`UPDATE people SET days = ${keep("people.days")}
           WHERE family_id IN (SELECT id FROM families WHERE tournament_id = ?3) AND ${datesNow}`).bind(start, end, tid),
       ]);
       if (!res[0].meta.changes) throw new HttpError(409, "The trip was just finalized, or its dates changed on another phone. Reload and check.");
@@ -522,8 +527,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   }
 
   // Families and people. Days are set per family; everyone follows them unless
-  // they have their own (own_days). Fencing days always stay within the days a
-  // person is there. people.days stays the source of truth for every split.
+  // they have their own (own_days). A fencer fences every day they're there except
+  // their rest days. people.days stays the source of truth for every split.
   if ((m = path.match(/^\/tournaments\/(\d+)\/families$/)) && method === "POST") {
     const tid = Number(m[1]);
     const b = await body(req);
@@ -584,13 +589,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
           const days = b.day != null
             ? cleanDays(b.on ? [...was, b.day] : was.filter(d => d !== b.day), all)
             : cleanDays(b.days, all);
-          // People who follow the family get its days; their fencing days are trimmed
-          // as they stand now, so a fencing tap landing meanwhile isn't undone.
+          // People who follow the family get its days. Their rest days aren't touched, so a
+          // day taken off and put back comes back fenced or rested, as it was.
           const res = await env.DB.batch([
             env.DB.prepare(`UPDATE families SET days = ? WHERE id = ? AND uid = ? AND days = ? AND ${OPEN} AND ${SAME_SPAN}`).bind(JSON.stringify(days), fid, f.uid, cur.days, tid, tid, all.span),
-            // A fencer who fences every day they're there keeps doing so on a day added.
-            env.DB.prepare(`UPDATE people SET days = ?1, fencing_days = CASE WHEN people.is_fencer = 1 AND people.fencing_days = people.days THEN ?1
-                ELSE (SELECT json_group_array(j.value) FROM json_each(people.fencing_days) j WHERE j.value IN (SELECT value FROM json_each(?1))) END
+            env.DB.prepare(`UPDATE people SET days = ?1
               WHERE family_id = ?2 AND own_days = 0 AND (SELECT days FROM families WHERE id = ?2) = ?1 AND ${OPEN3}`).bind(JSON.stringify(days), fid, tid),
           ]);
           done = !!res[0].meta.changes;
@@ -632,9 +635,9 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const fencer = !!b.is_fencer;
     // Someone who follows the family gets its days as they are when the row is written.
     // A new fencer starts fencing every day they're there; it's one tap to take days off.
-    const r = await env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, fencing_days, own_days, client_key)
-      SELECT ?1, ?2, ?3, d.days, CASE WHEN ?3 = 0 THEN '[]' WHEN ?4 IS NULL THEN d.days
-        ELSE (SELECT json_group_array(value) FROM json_each(?4) WHERE value IN (SELECT value FROM json_each(d.days))) END, ?5, ?9
+    const r = await env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, rest_days, own_days, client_key)
+      SELECT ?1, ?2, ?3, d.days, CASE WHEN ?3 = 0 OR ?4 IS NULL THEN '[]'
+        ELSE (SELECT json_group_array(value) FROM (SELECT value FROM json_each(d.days) WHERE value NOT IN (SELECT value FROM json_each(?4)) ORDER BY value)) END, ?5, ?9
       FROM (SELECT CASE WHEN ?5 = 1 THEN ?6 ELSE (SELECT days FROM families WHERE id = ?1) END AS days) d
       WHERE EXISTS (SELECT 1 FROM tournaments WHERE id = ?7 AND status = 'open' AND deleted_at IS NULL AND start_date || '/' || end_date = ?8) ON CONFLICT DO NOTHING RETURNING id`)
       .bind(fid, str(b.name), fencer ? 1 : 0, b.fencing_days == null ? null : JSON.stringify(cleanDays(b.fencing_days, all)), own ? 1 : 0,
@@ -664,15 +667,16 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         : b.own_day != null ? cleanDays(flip(JSON.parse(p.days), b.own_day, !!b.on), all)
         : b.days == null ? JSON.parse(p.days) : cleanDays(b.days, all);
       const fencer = b.is_fencer == null ? !!p.is_fencer : !!b.is_fencer;
-      const wasFencing: string[] = JSON.parse(p.fencing_days);
-      // Unticking Fencer keeps their fencing days (nothing counts them while they're not a
-      // fencer), so ticking it again brings back the days picked, not every day.
-      const fencing = (!fencer ? wasFencing : b.fencing_day != null ? cleanDays(flip(wasFencing, b.fencing_day, !!b.on), all)
-        : b.fencing_days == null ? (!p.is_fencer && !wasFencing.length ? days : wasFencing) : cleanDays(b.fencing_days, all)).filter(d => days.includes(d));
+      // Rest days are kept whatever happens to their days, and while they're not a fencer,
+      // so a day put back, or Fencer ticked again, comes back as it was.
+      let rest: string[] = JSON.parse(p.rest_days);
+      if (fencer && b.fencing_day != null) rest = flip(rest, b.fencing_day, !b.on);
+      else if (fencer && b.fencing_days != null) { const f = cleanDays(b.fencing_days, all); rest = [...rest.filter(d => !days.includes(d)), ...days.filter(d => !f.includes(d))]; }
+      rest = [...new Set(rest)].sort();
       // Someone following the family takes its days as read, so those must still be its days.
       const famSame = "(SELECT days FROM families WHERE id = ?) = ?";
-      const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?, days = ?, fencing_days = ?, own_days = ? WHERE id = ? AND uid = ? AND days = ? AND fencing_days = ? AND ${OPEN} AND ${SAME_SPAN}${own ? "" : ` AND ${famSame}`}`).bind(
-        str(b.name) || p.name, fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(fencing), own ? 1 : 0, pid, p.uid, p.days, p.fencing_days, p.tournament_id, p.tournament_id, all.span,
+      const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?, days = ?, rest_days = ?, own_days = ? WHERE id = ? AND uid = ? AND days = ? AND rest_days = ? AND ${OPEN} AND ${SAME_SPAN}${own ? "" : ` AND ${famSame}`}`).bind(
+        str(b.name) || p.name, fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(rest), own ? 1 : 0, pid, p.uid, p.days, p.rest_days, p.tournament_id, p.tournament_id, all.span,
         ...(own ? [] : [p.family_id, p.family_days])).run();
       if (!u.meta.changes) throw new HttpError(409, "That changed on another phone a moment ago. Reload and try again.");
       await log(env, p.tournament_id, name, `updated ${str(b.name) || p.name}`);
@@ -733,7 +737,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       // The same edit sent again because its reply was lost: it's already saved.
       const same = e && b.rev === old.rev - 1 && EXPENSE_FIELDS.every(k => (e as any)[k] === old[k]);
       if (same) return json({ ok: true });
-      throw new HttpError(409, "Someone changed this expense after you opened it. Go back and open it again to see their version.");
+      throw new HttpError(409, "This expense changed after you opened it, on another phone or by an earlier save of yours that went through. Go back and open it again to see it as it is.");
     }
     if (method === "PATCH" && e) {
       // A new receipt must really be there: an editor left open from before someone

@@ -256,9 +256,9 @@ async function show() {
       if (stale()) return;
       S.trip = trip;
       if (parts[2] === "e") return renderEditor(parts[3] === "new" ? null : Number(parts[3]));
-      if (parts[2] === "f") { S.draft = null; return renderFamily(Number(parts[3])); }
-      if (parts[2] === "day") { S.draft = null; return renderDay(parts[3]); }
-      S.draft = null; dropDraft();
+      leaveDraft();
+      if (parts[2] === "f") return renderFamily(Number(parts[3]));
+      if (parts[2] === "day") return renderDay(parts[3]);
       const tab = q.get("tab");
       return renderTrip(["expenses", "families", "settle", "treasurer"].includes(tab) ? tab : "expenses");
     }
@@ -545,14 +545,16 @@ function tabExpenses(el) {
           <div class="rc ${e.receipt_key ? "has" : ""}">${icon(e.receipt_key ? "receipt" : "nore")}${e.receipt_key ? "Receipt" : "No receipt"}</div></div></a>`; }).join("")}`).join("");
   // The treasurer ask lives on the Treasurer tab and in the next-step card, not over the list.
   // Add expense comes first: it floats at the bottom on a phone and sits at the top on a laptop.
-  const wait = waiting(t.id);
+  const wait = waiting(t.id), unsent = unsentDraft(t.id);
   const since = w => new Date(w.at).toLocaleString("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" });
   el.innerHTML = `
     ${final() ? "" : `<a class="btn btn-primary fab" href="#/t/${t.id}/e/new">${icon("plus")} Add expense</a>`}
-    ${wait.length ? `<div class="card waiting"><h2>Waiting to send</h2>
-      <p class="muted small" style="margin-top:-4px">On this phone, not confirmed yet. It may already be on the trip. Sent by itself when there's a signal, and not in the totals until then.</p>
+    ${wait.length || unsent ? `<div class="card waiting"><h2>Waiting to send</h2>
+      ${unsent ? `<a class="xrow" href="#/t/${t.id}/e/new"><div class="grow"><div class="what">${esc(unsent.description || "New expense")}${cents(unsent.amount) > 0 ? `, ${money(cents(unsent.amount))}` : ""}</div>
+        <div class="meta"><span class="owe">Not saved: it needs a signal. Tap to finish it.</span></div></div>${icon("chev")}</a>` : ""}
+      ${wait.length ? `<p class="muted small" style="margin-top:-4px">On this phone, not confirmed yet. It may already be on the trip. Sent by itself when there's a signal, and not in the totals until then.</p>` : ""}
       ${wait.map(w => `<div class="xrow"><div class="grow"><div class="what">${esc(w.label)}</div>
-        <div class="meta">${w.refused ? `<span class="owe">Couldn't send: ${esc(w.refused)}</span>` : `Waiting since ${esc(since(w))}`}</div></div>
+        <div class="meta">${w.refused ? `<span class="owe">Couldn't send: ${esc(w.refused)}</span> <button class="link small" data-act="rewait" data-key="${esc(w.key)}">Open it to fix</button>` : `Waiting since ${esc(since(w))}`}</div></div>
         <button class="btn-ghost btn-small" data-act="unwait" data-key="${esc(w.key)}">Remove</button></div>`).join("")}</div>` : ""}
     <div class="card ledger">
       <div class="total"><span class="muted">${plural(expenses.length, "shared expense", "shared expenses")}</span><span class="v">${money(total)}</span></div>
@@ -1105,7 +1107,7 @@ async function uploadReceipt(file, tid) {
     if (!stillHere()) { d.uploading = false; return; }
     drawReceipt("reading");
     try { const f = await api(`/tournaments/${tid}/read-receipt`, { method: "POST", body: { key: r.key } }); if (stillHere()) fillFromReceipt(f, d); }
-    catch (e) { if (e instanceof AuthError) throw e; d.aiNote = e.message; }
+    catch (e) { if (e instanceof AuthError) throw e; d.aiNote = e.unsure ? "Couldn't read the receipt just now. Fill in the form by hand." : e.message; }
     finally { d.uploading = false; }
   } catch (e) {
     d.uploading = false;
@@ -1159,9 +1161,10 @@ function migratePending() {
  } catch {}
 }
 
-function holdExpense(t, who, body) {
+function holdExpense(t, who, body, from) {
   const w = { key: body.client_key, trip: t.id, who, at: Date.now(), label: `${body.description || CATEGORIES[body.category].label}, ${money(body.amount_cents)}`, body };
   if (!keepWaiting(w)) { toast("No signal, and this phone couldn't keep the expense. Try again when you have signal."); return false; }
+  if (from) dropWaiting(from);
   toast(`No signal. ${w.label} is waiting on this phone and will be sent by itself.`);
   return true;
 }
@@ -1202,6 +1205,9 @@ const DRAFT = "efc-draft";
 function keepDraft() { if (!S.draft || !S.trip) return; try { sessionStorage.setItem(DRAFT, JSON.stringify({ trip: S.trip.tournament.id, d: { ...S.draft, uploading: false } })); } catch {} }
 function keptDraft(tid, id) { try { const k = JSON.parse(sessionStorage.getItem(DRAFT)); return k && k.trip === tid && k.d.id === id ? k.d : null; } catch { return null; } }
 function dropDraft() { try { sessionStorage.removeItem(DRAFT); } catch {} }
+// A new expense that needed a signal and didn't get one stays kept when they leave the form.
+const unsentDraft = tid => { const k = keptDraft(tid, 0); return k?.unsent ? k : null; };
+function leaveDraft() { S.draft = null; if (!S.trip || !unsentDraft(S.trip.tournament.id)) dropDraft(); }
 document.addEventListener("input", () => keepDraft(), true);
 document.addEventListener("change", () => keepDraft(), true);
 document.addEventListener("click", () => setTimeout(keepDraft), true);
@@ -1229,7 +1235,8 @@ async function saveExpense() {
   try { fresh = await api(`/tournaments/${t.id}`); }
   catch (e) {
     if (e instanceof AuthError) return renderLogin();
-    if (e.unsure && canWait) { if (holdExpense(t, who, body) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
+    if (e.unsure && canWait) { if (holdExpense(t, who, body, d.fromWait) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
+    if (e.unsure && !d.id) { d.unsent = true; keepDraft(); }
     return toast(e.unsure && !d.id ? needsSignal : e.message);
   }
   // Who's on the trip, and which days: everything the shares on this form were worked out from.
@@ -1252,11 +1259,13 @@ async function saveExpense() {
     const here = S.draft === d;
     if (here) { app.inert = false; btn.disabled = false; btn.innerHTML = label; }
     // No answer: it may have saved. If it can wait, it waits (even if they've moved on).
-    if (e.unsure && canWait) { if (holdExpense(t, who, body) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
+    if (e.unsure && canWait) { if (holdExpense(t, who, body, d.fromWait) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
+    if (e.unsure && !d.id) { d.unsent = true; keepDraft(); }
     return toast(e.unsure && !d.id ? "The connection dropped before the app heard back. " + needsSignal : e.message);
   }
   // A retry of a save that had landed: it's on the trip as first sent.
   toast(r.already && !r.same ? "Your first save went through as it was then. Open it from the list to change it." : "Expense saved");
+  if (d.fromWait) dropWaiting(d.fromWait);
   if (S.draft !== d) return;            // they've moved on to something else meanwhile
   S.draft = null; dropDraft();
   location.hash = `#/t/${t.id}`;
@@ -1436,6 +1445,16 @@ app.addEventListener("click", async ev => {
         return;
       }
       case "new-trip": return newTrip();
+      case "rewait": {
+        // A refused expense comes back into the form as a new one, to fix and save.
+        const w = waiting().find(x => x.key === b.dataset.key); if (!w) return renderTrip(tabNow());
+        const x = w.body;
+        S.draft = { id: 0, description: x.description || "", vendor: x.vendor || "", date: x.date || null, category: x.category, basis: x.basis,
+          amount: (x.amount_cents / 100).toFixed(2), paid_by: S.trip.families.some(f => f.id === x.paid_by) ? x.paid_by : "", split: x.split || {},
+          receipt_key: x.receipt_key, receipt_type: x.receipt_type, basisTouched: true, splitTouched: true, catTouched: true, dateTouched: true,
+          client_key: crypto.randomUUID(), fromWait: w.key };
+        keepDraft(); location.hash = `#/t/${t.id}/e/new`; return;
+      }
       case "unwait": {
         const w = waiting().find(x => x.key === b.dataset.key); if (!w) return renderTrip(tabNow());
         const ok = await confirmSheet(`Remove ${esc(w.label)}?`, w.refused ? "It wasn't added to the trip. Removing it takes it off this phone."
@@ -1484,7 +1503,7 @@ app.addEventListener("click", async ev => {
         if (!(await confirmSheet("Delete this expense?", "It's removed for everyone, along with its receipt.", "Delete", true))) return;
         { const seen = S.draft?.id === id ? S.draft : S.trip.expenses.find(x => x.id === id);
           try { await api(`/expenses/${id}`, { method: "DELETE", body: { created_at: seen?.created_at, rev: seen?.rev } }); toast("Deleted"); }
-          catch (e) { if (e.status !== 404) { toast(e.message); return; } toast("Deleted"); } }   // 404: a retry of a delete that already went through
+          catch (e) { if (e instanceof AuthError) return renderLogin(); if (e.status !== 404) { toast(e.message); return; } toast("Deleted"); } }   // 404: a retry of a delete that already went through
         dropDraft(); S.draft = null; location.hash = `#/t/${t.id}`; return;
       case "drop-receipt": S.draft.receipt_key = null; S.draft.receipt_type = null; S.draft.aiNote = ""; return drawReceipt();
       case "volunteer": return volunteerSheet();
@@ -1494,8 +1513,9 @@ app.addEventListener("click", async ev => {
         save(myKey(), null); S.lastTab = null;
         location.hash = `#/t/${t.id}`; return refresh("expenses");
       case "finalize": {
+        const seenAct = Math.max(0, ...S.trip.activity.map(a => a.id));    // as this screen showed it, before the sheet
         if (!(await confirmSheet("Finalize this trip?", `Expenses lock, and everyone settles through ${esc(t.treasurer_name)}. You can reopen it later if something was missed.`, "Finalize"))) return;
-        await act(() => api(`/tournaments/${t.id}/finalize`, { method: "POST", body: { seen_activity: Math.max(0, ...S.trip.activity.map(a => a.id)) } }), "Trip finalized");
+        await act(() => api(`/tournaments/${t.id}/finalize`, { method: "POST", body: { seen_activity: seenAct } }), "Trip finalized");
         await refresh("settle");
         if (await confirmSheet("Let everyone know", "Copy the list of who pays what, then paste it into the team chat.", "Copy payment list", false)) copy(finalMessage(S.trip.tournament));
         return;
