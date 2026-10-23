@@ -5,7 +5,7 @@ Your copy of the code is /tmp/claude-1000/-home-frank-Dev-agent-office/338f6aba-
   npx wrangler dev --port 8861 --ip 127.0.0.1 --persist-to .local-db --inspector-port 9861
 Run the server in the background and stop it when you are done: kill the process running 'wrangler dev --port 8861' (fuser on the port alone lets wrangler restart it), then check port 8861 is free. The access code is fence-local-test. Earlier reviews and what was done about them: review/code/README.md in your copy. Stay inside your copy: do not touch /home/frank/Dev or anything outside it.
 
-What it is for: parents of a fencing club use it to split the shared costs of team trips to tournaments (meals, the coach's travel and stay, transport), fairly, and settle up through one volunteer treasurer. A handful of parents use it, sometimes at the same moment from their phones.
+What it is for: parents of a fencing club use it to split the shared costs of team trips to tournaments (team meals and outings, and the coach's travel, hotel and meals), fairly, and settle up through one volunteer treasurer. A handful of parents use it, sometimes at the same moment from their phones.
 
 Review this code. In the ways parents really use it, does it give anyone a wrong result or lose their work?
 

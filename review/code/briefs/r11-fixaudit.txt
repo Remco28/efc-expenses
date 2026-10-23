@@ -5,7 +5,7 @@ Your copy of the code is /tmp/claude-1000/-home-frank-Dev-agent-office/338f6aba-
   npx wrangler dev --port 8863 --ip 127.0.0.1 --persist-to .local-db --inspector-port 9863
 Run the server in the background and stop it when you are done: kill the process running 'wrangler dev --port 8863' (fuser on the port alone lets wrangler restart it), then check port 8863 is free. The access code is fence-local-test. Earlier reviews and what was done about them: review/code/README.md in your copy. Stay inside your copy: do not touch /home/frank/Dev or anything outside it.
 
-What it is for: parents of a fencing club use it to split the shared costs of team trips to tournaments (meals, the coach's travel and stay, transport), fairly, and settle up through one volunteer treasurer. A handful of parents use it, sometimes at the same moment from their phones.
+What it is for: parents of a fencing club use it to split the shared costs of team trips to tournaments (team meals and outings, and the coach's travel, hotel and meals), fairly, and settle up through one volunteer treasurer. A handful of parents use it, sometimes at the same moment from their phones.
 
 Since commit 6cc7e4d (the code the last review read), the code changed in three steps, described in review/code/README.md from "Round 10" on: the round 10 fixes, the fixes after its audit, and rebuilding how costs are split on the club's real rules (review/design/billing-model.md), with the test scripts updated to match. Read the diff from 6cc7e4d to 60fcc7d. Did each change do what it says? Did it make anything worse that used to work? Is a change applied in one place and missed in another?
 
