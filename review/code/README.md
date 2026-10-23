@@ -412,3 +412,9 @@ Row 3 stays open for Frank, now with the option the audit named: when a family i
 Also accepted: most rows copied the reviewer's rating; and the table doesn't say how each finding was checked before fixing. Rows 1 and 2 were reproduced by their readers and by round10.mjs; rows 4, 5 by the browser checks (after the fix); rows 7, 8, 10, 11 were read in the code and not reproduced before fixing.
 
 **So round 10 had two HIGH findings (rows 1, 2), and a round 11 follows.**
+
+## The split rebuilt on the club's real rules (before round 11)
+
+Ten rounds reviewed code built on a wrong assumption: that families on a trip eat together, so a meal is split among everyone there that day, and so every family needs "days at the trip". Frank, asked in plain words how the club actually pays: team dinners are occasional, often several separate groups, and opt-in; attendance days aren't needed; fencing days are essential. No review round could have found this: every reader checked the code against our idea of the app, not the club's. It took a few minutes of plain questions to the person who knows.
+
+The rules (review/design/billing-model.md) went through two critic pairs (on the rules, then on the build plan) before building. Built: three splits (who took part, with a head count per ticked family; equal per fencer; by fencing days), each kind of expense fixing its split (only Other chooses); no attendance days; a trip-wide Fencing days screen; every new expense, ticked meals included, can wait on the phone (ticked families named by their tags); old test scripts updated through the test helper (stamp.mjs translates old-shape expenses), checks of retired rules (family days, own days, rest days) removed, and checks of the new rules added (round10.mjs). The live trips were test data and are cleared (scripts/clear-trips.sql). Migrations 0012's rest_days and the old days columns are no longer read.

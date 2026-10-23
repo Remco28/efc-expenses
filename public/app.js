@@ -1,4 +1,4 @@
-import { BASES, CATEGORIES, tournamentDays, autoUnits, defaultSplit, shares, balances, unsplit, treasurerPlan, money } from "./split.js";
+import { BASES, CATEGORIES, tournamentDays, familySize, shares, balances, unsplit, treasurerPlan, money } from "./split.js";
 
 const app = document.getElementById("app");
 const S = { name: load("efc-name"), list: null, trip: null, draft: null };
@@ -163,15 +163,15 @@ const confirmSheet = (title, lead, ok = "Yes", danger = false) => sheet({ title,
 // opens it again. The X, a tap outside the card, or Escape closes it.
 const TOUR = [
   { icon: "flag", title: "Welcome to EFC Trip Expenses",
-    text: "One place for the team's shared travel costs: meals, the coach's travel, transport. It works out who owes what, fairly. Here's how it works in a minute." },
+    text: "One place for the team's shared travel costs: team meals and outings, and the coach's travel, hotel and meals. It works out who owes what, fairly. Here's how it works in a minute." },
   { icon: "users", title: "Pick your trip, then your family",
     text: "Open a trip and tell it which family you are, or that you're the coach. From then on, the top of the trip shows what you owe or get back. Coaches who pay for things, like their hotel, are paid back by the treasurer." },
   { icon: "edit", title: "Manage your family",
-    text: "In Families, open your family to add everyone going: fencers, parents, siblings. Set the days you're there, and the days each kid fences. Changes save as you tap." },
+    text: "In Families, open your family to add everyone going: fencers, parents, siblings. Tick the days each kid actually fences. Changes save as you tap." },
   { icon: "camera", title: "Paid for something? Add it on the spot",
-    text: "Tap Add expense and take a photo of the receipt. The app reads it and fills in the form. Check it, pick who's sharing, and save. No receipt? Just type it in." },
+    text: "Tap Add expense and take a photo of the receipt. The app reads it and fills in the form. Check it, tick who took part if it was a meal, and save. No receipt? Just type it in." },
   { icon: "scale", title: "Split by what it was for",
-    text: "Meals are shared by the people there that day. The coach's travel is shared per fencer, and the coach's hotel by fencing days. Van and parking are shared per family. You'll always see each family's part." },
+    text: "A team meal or outing is paid by the families who went, by how many of each came; the coach's share is covered by whoever went. The coach's flight is shared equally per fencer. The coach's hotel, getting around and own meals are shared by fencing days. You'll always see each family's part." },
   { icon: "wallet", title: "One treasurer, one payment each",
     text: "A parent volunteers as treasurer. When the trip is finalized, each family that owes sends one payment to the treasurer, who pays back anyone who's owed and ticks it all off." },
   { icon: "doc", title: "A record for the club",
@@ -258,7 +258,7 @@ async function show() {
       if (parts[2] === "e") return renderEditor(parts[3] === "new" ? null : Number(parts[3]));
       leaveDraft();
       if (parts[2] === "f") return renderFamily(Number(parts[3]));
-      if (parts[2] === "day") return renderDay(parts[3]);
+      if (parts[2] === "fencing" || parts[2] === "day") { await fenceQueue; return renderFencing(); }
       const tab = q.get("tab");
       return renderTrip(["expenses", "families", "settle", "treasurer"].includes(tab) ? tab : "expenses");
     }
@@ -540,7 +540,7 @@ function tabExpenses(el) {
       <a class="xrow" href="#/t/${t.id}/e/${e.id}">
         <div class="ic">${icon(CAT_ICON[e.category] || "tag")}</div>
         <div class="grow"><div class="what">${esc(e.description)}</div>
-          <div class="meta">${esc(famName(e.paid_by))} paid · ${bad.has(e.id) ? `<span class="owe">nobody included</span>` : `${BASES[e.basis].label.toLowerCase()}, ${plural(s.total, BASES[e.basis].unit, BASES[e.basis].units)}`}</div></div>
+          <div class="meta">${esc(famName(e.paid_by))} paid · ${bad.has(e.id) ? `<span class="owe">nobody included</span>` : `${(BASES[e.basis]?.label || "older split").toLowerCase()}, ${plural(s.total, BASES[e.basis]?.unit || "share", BASES[e.basis]?.units || "shares")}`}</div></div>
         <div><div class="amt">${money(e.amount_cents)}</div>
           <div class="rc ${e.receipt_key ? "has" : ""}">${icon(e.receipt_key ? "receipt" : "nore")}${e.receipt_key ? "Receipt" : "No receipt"}</div></div></a>`; }).join("")}`).join("");
   // The treasurer ask lives on the Treasurer tab and in the next-step card, not over the list.
@@ -563,10 +563,10 @@ function tabExpenses(el) {
     <p class="hint" style="padding:0 4px">Shared costs only: team meals, the coach's travel and stay, transport and supplies. Your own flight and room aren't included, and neither are coaching fees.</p>`;
 }
 
-// ---------- families & attendance ----------
-// Days are set per family; a person follows them unless they have their own.
-// The Families tab is a short list of one-line summaries; each family opens on
-// its own Manage family screen, and every change there saves as you tap.
+// ---------- families & fencing days ----------
+// A family and its people are on the whole trip; the only per-day thing is which
+// days each fencer fences. The Families tab is a short list of one-line summaries;
+// each family opens on its own Manage family screen, and every change saves as you tap.
 function daysSummary(list) {
   const all = tournamentDays(S.trip.tournament.start_date, S.trip.tournament.end_date);
   const sorted = all.filter(d => list.includes(d));
@@ -583,10 +583,7 @@ function daysSummary(list) {
 function familyFlags(f) {
   const out = [];
   if (!f.people.length) out.push("nobody added yet");
-  for (const p of f.people) {
-    if (!p.days.length) out.push(`${p.name} has no days`);
-    else if (p.is_fencer && !p.fencing_days.length) out.push(`${p.name} has no fencing days`);
-  }
+  for (const p of f.people) if (p.is_fencer && !p.fencing_days.length) out.push(`${p.name} has no fencing days ticked`);
   return out;
 }
 
@@ -597,11 +594,11 @@ function tabFamilies(el) {
   const days = tournamentDays(t.start_date, t.end_date);
   const ro = final();
   const row = f => {
-    const fencers = f.people.filter(p => p.is_fencer).length, own = f.people.filter(p => p.own_days).length, flags = familyFlags(f);
+    const fencers = f.people.filter(p => p.is_fencer), flags = familyFlags(f);
     const words = [f.name, ...f.people.map(p => p.name)].join(" ").toLowerCase();
     return `<a class="famrow" href="#/t/${t.id}/f/${f.id}" data-search="${esc(words)}">
       <div class="grow"><div class="fam-name">${esc(f.name)}</div>
-        <div class="fam-sum">${plural(f.people.length, "person", "people")} · ${fencers} fencing · ${esc(daysSummary(f.days))}${own ? ` · ${own} with own days` : ""}</div>
+        <div class="fam-sum">${plural(f.people.length, "person", "people")}${fencers.map(p => ` · ${esc(p.name)} fences ${esc(daysSummary(p.fencing_days))}`).join("")}</div>
         ${flags.length ? `<div class="fam-flag">${icon("flag")} ${esc(flags.join("; "))}</div>` : ""}</div>${icon("chev")}</a>`;
   };
   const totalPeople = families.reduce((n, f) => n + f.people.length, 0);
@@ -619,9 +616,9 @@ function tabFamilies(el) {
       ${staff.map(f => `<a class="famrow" href="#/t/${t.id}/f/${f.id}"><div class="grow"><div class="fam-name">${esc(famLabel(f))}</div>
         <div class="fam-sum">${paid[f.id]?.paid ? `Paid ${money(paid[f.id].paid)} for the team, paid back by the treasurer` : "Hasn't paid for anything yet"}</div></div>${icon("chev")}</a>`).join("")
         || `<p class="faint small" style="margin:0">None added yet.</p>`}</div>
-    <div class="card"><h2>Check a day</h2><p class="muted small" style="margin-top:-4px">See who's there and who's fencing on one day, family by family.</p>
-      <div class="days">${days.map(d => `<a class="daylink" href="#/t/${t.id}/day/${d}">${esc(dayShort(d))}</a>`).join("")}</div></div>`
-    : `<div class="card empty"><div class="ic">${icon("users")}</div><b>No families yet</b>Add each family going on this trip. You'll set who's in it, which days they're there, and who's fencing.
+    <div class="card"><div class="head"><h2 style="border:0;padding:0;margin:0">Fencing days</h2><a class="btn btn-ghost btn-small" href="#/t/${t.id}/fencing">Open</a></div>
+      <p class="muted small" style="margin:6px 0 0">Every fencer and the days they fence, on one screen. The coach's hotel and own meals are split by these, so check them before finalizing.</p></div>`
+    : `<div class="card empty"><div class="ic">${icon("users")}</div><b>No families yet</b>Add each family going on this trip. You'll add who's in it, who's fencing, and the days each fencer competes.
         ${ro ? "" : `<div class="row-actions"><button class="btn-primary" data-act="add-family">${icon("plus")} Add family</button></div>`}</div>`}
     ${ro ? "" : `<details class="card"><summary>Trip details</summary>
       <form id="tripedit">
@@ -629,7 +626,7 @@ function tabFamilies(el) {
         <label class="f" for="el">Where <span class="opt">(optional)</span></label><input id="el" value="${esc(t.location)}">
         <div class="two"><div><label class="f" for="es">First day</label><input id="es" type="date" value="${t.start_date}" required></div>
           <div><label class="f" for="ee">Last day</label><input id="ee" type="date" value="${t.end_date}" required></div></div>
-        <p class="hint">Shortening the trip removes the dropped days from everyone's attendance.</p>
+        <p class="hint">Shortening the trip removes the dropped days from everyone's fencing days.</p>
         <div class="row-actions"><button class="btn-primary">Save details</button>${t.is_sandbox ? "" : `<button type="button" class="btn-danger" data-act="del-trip">Delete trip</button>`}</div>
       </form></details>`}`;
   const search = document.getElementById("famsearch");
@@ -644,10 +641,10 @@ function tabFamilies(el) {
     const start = document.getElementById("es").value, end = document.getElementById("ee").value;
     // Shortening the trip takes the dropped days off everyone, for good: say who, and ask.
     const gone = d => d < start || d > end;
-    const lose = S.trip.families.flatMap(f => f.people).filter(p => p.days.some(gone));
+    const lose = S.trip.families.flatMap(f => f.people).filter(p => p.is_fencer && p.fencing_days.some(gone));
     const dated = S.trip.expenses.filter(e => e.date && gone(e.date));
     if ((lose.length || dated.length) && !(await confirmSheet("Shorten the trip?",
-      `${lose.length ? `${esc(lose.slice(0, 3).map(p => p.name).join(", "))}${lose.length > 3 ? ` and ${lose.length - 3} more` : ""} will lose the days outside the new dates, and the shares change. ` : ""}${dated.length ? `${plural(dated.length, "expense is", "expenses are")} dated outside them. ` : ""}Moving the dates back later won't put those days back.`,
+      `${lose.length ? `${esc(lose.slice(0, 3).map(p => p.name).join(", "))}${lose.length > 3 ? ` and ${lose.length - 3} more` : ""} will lose fencing days outside the new dates, and the coach's costs are split again. ` : ""}${dated.length ? `${plural(dated.length, "expense is", "expenses are")} dated outside them. ` : ""}Moving the dates back later won't put those days back.`,
       "Shorten the trip"))) return;
     await act(() => api(`/tournaments/${t.id}`, { method: "PATCH", body: {
       name: document.getElementById("en").value, location: document.getElementById("el").value,
@@ -660,7 +657,7 @@ async function addFamily({ mine = false } = {}) {
   const t = S.trip.tournament;
   const v = await sheet({
     title: mine ? "Add your family" : "Add a family", ok: "Next",
-    lead: "Next you'll add the people in it and which days they're there.",
+    lead: "Next you'll add the people in it, and who's fencing.",
     body: `<label class="f" for="nf">Family name</label><input id="nf" name="name" placeholder="e.g. Bennett" required autocomplete="family-name">`,
   });
   if (!v) return;
@@ -677,11 +674,10 @@ function renderFamily(fid, focusSel) {
   const ro = final();
   if (f.kind === "staff") return renderStaff(f, focusSel);
   const days = tournamentDays(t.start_date, t.end_date);
-  const chips = (list, attrs, { only, fence, label } = {}) => `<div class="days-sum" aria-hidden="true">${esc(daysSummary(list))}</div>
+  const chips = (list, attrs, { fence, label } = {}) => `<div class="days-sum" aria-hidden="true">${esc(daysSummary(list))}</div>
     <div class="days${fence ? " fence" : ""}" role="group" aria-label="${esc(label || "Days")}">${days.map(d => {
-    const on = list.includes(d), off = only && !only.includes(d);
-    return `<button type="button" class="${on ? "on" : ""}" ${attrs} data-day="${d}" aria-pressed="${on}" ${ro || off ? "disabled" : ""}
-      ${off ? `title="Not there that day"` : ""}>${esc(dayShort(d))}</button>`;
+    const on = list.includes(d);
+    return `<button type="button" class="${on ? "on" : ""}" ${attrs} data-day="${d}" aria-pressed="${on}" ${ro ? "disabled" : ""}>${esc(dayShort(d))}</button>`;
   }).join("")}</div>`;
   const mineNote = new URLSearchParams(location.hash.split("?")[1] || "").get("mine");
   const person = p => `
@@ -691,16 +687,12 @@ function renderFamily(fid, focusSel) {
         <label class="switch small-switch"><input type="checkbox" data-fencer="${p.id}" ${p.is_fencer ? "checked" : ""} ${ro ? "disabled" : ""}> Fencer</label>
         ${ro ? "" : `<button class="link danger small" data-act="remove-person" data-id="${p.id}" aria-label="Remove ${esc(p.name)}">Remove</button>`}
       </div>
-      ${p.is_fencer ? `<div class="sub-label">Fences on <span class="opt">(only the days they compete)</span></div>${chips(p.fencing_days, `data-fence="${p.id}"`, { only: p.days, fence: true, label: `${p.name} fences on` })}
-        ${!p.fencing_days.length ? `<p class="hint owe">Tick the days ${esc(p.name)} competes, or they pay nothing toward the coach's stay.</p>` : ""}` : ""}
-      ${p.own_days
-        ? `<div class="sub-label">${esc(p.name)}'s own days <span class="opt">(different from the family)</span></div>${chips(p.days, `data-own="${p.id}"`, { label: `${p.name}'s own days` })}
-           ${ro ? "" : `<button class="link small" data-act="family-days" data-id="${p.id}">Use the family's days again</button>`}`
-        : `<div class="faint small">There ${esc(daysSummary(p.days).toLowerCase() === "whole trip" ? "the whole trip" : daysSummary(p.days))} with the family${ro ? "" : ` · <button class="link small" data-act="own-days" data-id="${p.id}">Different days?</button>`}</div>`}
+      ${p.is_fencer ? `<div class="sub-label">Fences on <span class="opt">(the days they actually compete)</span></div>${chips(p.fencing_days, `data-fence="${p.id}"`, { fence: true, label: `${p.name} fences on` })}
+        ${!p.fencing_days.length ? `<p class="hint owe">Tick the days ${esc(p.name)} competes. With none, they pay nothing toward the coach's hotel and meals.</p>` : ""}` : ""}
     </div>`;
   app.innerHTML = `${bar({ back: `#/t/${t.id}?tab=families`, title: `${f.name} family`, sub: t.name, right: `<span class="saved" id="savestate" role="status" aria-live="polite"></span>` })}
     <div class="wrap">
-      ${mineNote ? `<div class="callout good" style="margin-bottom:12px">This is your family on this phone. Add everyone who's going, then pick the days.</div>` : ""}
+      ${mineNote ? `<div class="callout good" style="margin-bottom:12px">This is your family on this phone. Add everyone who's going, and tick the days each fencer competes.</div>` : ""}
       ${ro ? `<div class="callout" style="margin-bottom:12px">This trip is final, so only payment details can change. Reopen it from Settle up to change anything else.</div>` : ""}
       <div class="stack">
       <div class="card">
@@ -708,11 +700,8 @@ function renderFamily(fid, focusSel) {
         <label class="f" for="fam-pay">If this family ends up owed money, how should the treasurer send it? <span class="opt">(optional)</span></label>
         <input id="fam-pay" value="${esc(f.pay_notes)}" placeholder="e.g. Venmo @laura-bennett or Zelle 614-555-0123">
       </div>
-      <div class="card"><h2>Days at the trip</h2>
-        <p class="muted small" style="margin-top:-4px">For the whole family. Anyone with different days can be changed below.</p>
-        ${chips(f.days, `data-famday="1"`, { label: `${f.name} family's days` })}</div>
       <div class="card ledger"><h2>People <span class="faint small" style="font-family:inherit;font-weight:500">${f.people.length}</span></h2>
-        <p class="muted small" style="margin-top:-4px">Everyone going: fencers, parents, siblings, grandparents. Changes save as you go.</p>
+        <p class="muted small" style="margin-top:-4px">Everyone going: fencers, parents, siblings, grandparents. Their number is the head count a team meal starts with. Changes save as you go.</p>
         ${f.people.map(person).join("") || `<p class="faint">Nobody added yet.</p>`}
         ${ro ? "" : `<form id="addperson" class="addperson">
           <input id="newname" placeholder="Add a person: first name" aria-label="New person's first name" autocomplete="off">
@@ -828,19 +817,11 @@ function wireFamily(f) {
   if (name) name.onchange = () => name.value.trim() && famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { name: name.value } }));
   if (pay) pay.onchange = () => famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { pay_notes: pay.value } }));
   // Each tap sends one change ("add Saturday"), so a screen left open on another
-  // phone can't overwrite days someone set since.
+  // phone can't overwrite fencing days someone set since.
   const flipBtn = b => { b.classList.toggle("on"); b.setAttribute("aria-pressed", b.classList.contains("on")); return b.classList.contains("on"); };
-  root.querySelectorAll("[data-famday]").forEach(b => b.onclick = () => {
-    const on = flipBtn(b);
-    famSave(fid, () => api(`/families/${fid}`, { method: "PATCH", body: { day: b.dataset.day, on } }));
-  });
   root.querySelectorAll("[data-fence]").forEach(b => b.onclick = () => {
     const on = flipBtn(b);
     famSave(fid, () => api(`/people/${b.dataset.fence}`, { method: "PATCH", body: { fencing_day: b.dataset.day, on } }));
-  });
-  root.querySelectorAll("[data-own]").forEach(b => b.onclick = () => {
-    const on = flipBtn(b);
-    famSave(fid, () => api(`/people/${b.dataset.own}`, { method: "PATCH", body: { own_day: b.dataset.day, on } }));
   });
   root.querySelectorAll("[data-fencer]").forEach(c => c.onchange = () =>
     famSave(fid, () => api(`/people/${c.dataset.fencer}`, { method: "PATCH", body: { is_fencer: c.checked } })));
@@ -873,38 +854,54 @@ function wireFamily(f) {
   };
 }
 
-// ---------- check a day ----------
-function renderDay(date) {
-  const { tournament: t, families } = S.trip;
-  const days = tournamentDays(t.start_date, t.end_date);
-  if (!days.includes(date)) date = days[0];
-  const there = realFamilies().map(f => ({ f, ppl: f.people.filter(p => p.days.includes(date)) }));
-  const present = there.filter(x => x.ppl.length), absent = there.filter(x => !x.ppl.length);
-  const nPeople = present.reduce((n, x) => n + x.ppl.length, 0);
-  const nFence = present.reduce((n, x) => n + x.ppl.filter(p => p.is_fencer && p.fencing_days.includes(date)).length, 0);
-  app.innerHTML = `${bar({ back: `#/t/${t.id}?tab=families`, title: "Check a day", sub: t.name })}
+// ---------- fencing days, every fencer on one screen ----------
+// The coach's hotel and own meals are split by these, so the treasurer checks them
+// here before finalizing. Each tap saves one day, like on the family screen.
+function renderFencing() {
+  const { tournament: t } = S.trip;
+  const days = tournamentDays(t.start_date, t.end_date), ro = final();
+  const fams = realFamilies().map(f => ({ f, fencers: f.people.filter(p => p.is_fencer) })).filter(x => x.fencers.length);
+  const n = fams.reduce((k, x) => k + x.fencers.reduce((m, p) => m + p.fencing_days.length, 0), 0);
+  const none = fams.flatMap(x => x.fencers).filter(p => !p.fencing_days.length);
+  app.innerHTML = `${bar({ back: `#/t/${t.id}?tab=families`, title: "Fencing days", sub: t.name, right: `<span class="saved" id="savestate" role="status" aria-live="polite"></span>` })}
     <div class="wrap"><div class="stack">
-      <div class="days">${days.map(d => `<a class="daylink ${d === date ? "on" : ""}" href="#/t/${t.id}/day/${d}" ${d === date ? 'aria-current="page"' : ""}>${esc(dayShort(d))}</a>`).join("")}</div>
-      <div class="card you" style="border-top-width:4px"><div class="eyebrow">${esc(dayLong(date))}</div>
-        <div class="big" style="font-size:22px">${plural(nPeople, "person", "people")} from ${plural(present.length, "family", "families")}</div>
-        <div class="muted small">${nFence} fencing · meals that day are split among these ${nPeople}</div></div>
-      <div class="card ledger"><h2>There this day</h2>
-        ${present.map(({ f, ppl }) => `<a class="famrow" href="#/t/${t.id}/f/${f.id}"><div class="grow"><div class="fam-name">${esc(f.name)} <span class="faint small" style="font-weight:500">${ppl.length}</span></div>
-          <div class="fam-sum day-ppl">${ppl.map(p => `<span>${esc(p.name)}${p.is_fencer && p.fencing_days.includes(date) ? ` <span class="chip fencer">fencing</span>` : ""}</span>`).join("")}</div></div>${icon("chev")}</a>`).join("") || `<p class="faint">Nobody is marked as there.</p>`}
-      </div>
-      ${absent.length ? `<div class="card"><h2>Not there this day</h2><p class="muted small" style="margin-top:-4px">If one of these was actually there, tap it to fix their days.</p>
-        ${absent.map(({ f }) => `<a class="famrow" href="#/t/${t.id}/f/${f.id}"><div class="grow"><div class="fam-name">${esc(f.name)}</div></div>${icon("chev")}</a>`).join("")}</div>` : ""}
+      <div class="card you" style="border-top-width:4px"><div class="big" style="font-size:22px">${plural(n, "fencing day", "fencing days")}</div>
+        <div class="muted small">The coach's hotel, getting around and own meals are split by these: each day a fencer competes is one share.</div></div>
+      ${none.length ? `<div class="callout warn">${esc(none.map(p => p.name).join(", "))} ${none.length > 1 ? "have" : "has"} no fencing days ticked, so ${none.length > 1 ? "they pay" : "pays"} nothing toward the coach's hotel and meals.</div>` : ""}
+      <div class="card ledger">${fams.map(({ f, fencers }) => `<div class="person-block"><div class="fam-name"><a href="#/t/${t.id}/f/${f.id}">${esc(f.name)}</a></div>
+        ${fencers.map(p => `<div class="sub-label">${esc(p.name)}</div><div class="days fence" role="group" aria-label="${esc(p.name)} fences on">${days.map(d => {
+          const on = p.fencing_days.includes(d);
+          return `<button type="button" class="${on ? "on" : ""}" data-fence="${p.id}" data-day="${d}" aria-pressed="${on}" ${ro ? "disabled" : ""}>${esc(dayShort(d))}</button>`;
+        }).join("")}</div>`).join("")}</div>`).join("") || `<p class="faint">No fencers yet. Tick Fencer for someone on their family's screen.</p>`}</div>
     </div></div>`;
+  app.querySelectorAll("[data-fence]").forEach(b => b.onclick = () => {
+    b.classList.toggle("on"); const on = b.classList.contains("on"); b.setAttribute("aria-pressed", on);
+    fencingSave(() => api(`/people/${b.dataset.fence}`, { method: "PATCH", body: { fencing_day: b.dataset.day, on } }));
+  });
+}
+// Taps save one after another; after the last, the screen shows what the trip now says.
+let fenceQueue = Promise.resolve(), fencePending = 0;
+function fencingSave(call) {
+  const st = () => document.getElementById("savestate");
+  if (st()) st().textContent = "Saving…";
+  fencePending++;
+  fenceQueue = fenceQueue.then(() => act(call)).catch(() => {}).then(async () => {
+    if (--fencePending) return;
+    const here = () => hashPath() === `#/t/${S.trip.tournament.id}/fencing`;
+    try { if (here()) { await loadTrip(S.trip.tournament.id); if (here()) { renderFencing(); if (st()) st().textContent = "✓ Saved"; } } }
+    catch (e) { if (st()) st().textContent = ""; }
+  });
+  return fenceQueue;
 }
 
 // ---------- expense editor ----------
 const BASIS_HELP = {
-  person: "Everyone there that day counts as one: fencers, parents, siblings. The app fills in each family's head count for you.",
-  fencer: "One share per fencer at the tournament, however many days they fence.",
-  fencer_day: "One share for each day each kid fences.",
-  family: "Each family that used it pays an equal share.",
-  custom: "Type each family's number of shares yourself.",
+  took_part: "Only the families ticked pay, by how many of each came. The coach's share is covered by whoever went.",
+  per_fencer: "Every fencer on the trip pays the same share, however many days they fence.",
+  fencer_day: "Each day a fencer competes is one share, across the whole trip.",
 };
+// Old kinds of expense (from before the three splits) still show, as Other.
+const catOf = e => CATEGORIES[e.category] || CATEGORIES.other;
 
 function renderEditor(id) {
   const { tournament: t, families, expenses } = S.trip;
@@ -914,11 +911,10 @@ function renderEditor(id) {
   if ((!S.draft || S.draft.id !== (id || 0)) && (S.draft = keptDraft(t.id, id || 0))) toast("Picked up where you left off.");
   if (!S.draft || S.draft.id !== (id || 0)) {
     const me = myFamily();
-    // Families added since this expense was entered count automatically too.
-    const split = e ? { ...Object.fromEntries(families.filter(f => f.kind !== "staff").map(f => [f.id, e.basis === "custom" ? 0 : null])), ...e.split } : {};
-    S.draft = e ? { ...e, split, amount: (e.amount_cents / 100).toFixed(2), basisTouched: e.basis !== CATEGORIES[e.category]?.basis, splitTouched: true, catTouched: true, dateTouched: true }
-      : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "person", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, basisTouched: false, client_key: crypto.randomUUID() };
-    if (!e) S.draft.split = defaultSplit("person", families);
+    // A new expense starts as a team meal with nobody ticked: whoever enters it ticks who took part.
+    S.draft = e ? { ...e, category: CATEGORIES[e.category] ? e.category : "other", basis: BASES[e.basis] ? e.basis : "took_part", split: { ...e.split },
+        amount: (e.amount_cents / 100).toFixed(2), catTouched: true, dateTouched: true }
+      : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "took_part", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, client_key: crypto.randomUUID() };
   }
   const d = S.draft;
   const days = tournamentDays(t.start_date, t.end_date);
@@ -928,12 +924,11 @@ function renderEditor(id) {
       <div class="section"><h2><span class="n">2</span>What was it?</h2>
         <label class="f" for="amt" style="margin-top:0">Amount</label>
         <div class="money-in"><span>$</span><input id="amt" inputmode="decimal" placeholder="0.00" value="${esc(d.amount)}" autocomplete="off"></div>
-        <label class="f" for="desc">Description</label><input id="desc" value="${esc(d.description)}" placeholder="e.g. Team lunch, Coach hotel 3 nights">
-        <label class="f" for="cat">Category</label><select id="cat">
+        <label class="f" for="desc">Description</label><input id="desc" value="${esc(d.description)}" placeholder="e.g. Team dinner, Coach hotel 3 nights">
+        <label class="f" for="cat">What kind of cost?</label><select id="cat">
           ${Object.entries(CATEGORIES).map(([k, c]) => `<option value="${k}" ${d.category === k ? "selected" : ""}>${esc(c.label)}</option>`).join("")}</select>
-        <label class="f" for="day">Day</label><select id="day"><option value="">Whole trip, or more than one day</option>
+        <label class="f" for="day">Day <span class="opt">(for the record)</span></label><select id="day"><option value="">Whole trip, or more than one day</option>
           ${days.map(x => `<option value="${x}" ${d.date === x ? "selected" : ""}>${esc(dayLong(x))}</option>`).join("")}</select>
-        <p class="hint" id="daynote"></p>
         <label class="f" for="vend">Store or restaurant <span class="opt">(optional)</span></label><input id="vend" value="${esc(d.vendor)}">
       </div>
       <div class="section"><h2><span class="n">3</span>Who paid?</h2>
@@ -941,7 +936,7 @@ function renderEditor(id) {
       </div>
       <div class="section"><h2><span class="n">4</span>How is it shared?</h2>
         <div class="choices" id="basis" role="radiogroup" aria-label="How it's split"></div>
-        <label class="f">Who's sharing this cost?</label><div id="split"></div>
+        <div id="split"></div>
         <p class="hint" id="splithint"></p>
       </div>
       ${id ? `<div class="section"><button type="button" class="btn-danger btn-block" data-act="del-expense" data-id="${id}">Delete this expense</button>
@@ -952,12 +947,10 @@ function renderEditor(id) {
   const $ = s => document.getElementById(s);
   const pull = () => { d.amount = $("amt").value; d.description = $("desc").value; d.vendor = $("vend").value; };
   ["amt", "desc", "vend"].forEach(k => $(k).addEventListener("input", () => { pull(); drawSplit(); }));
-  // Changing the day keeps the sharing as set: automatic families follow the
-  // day by themselves, and unticked families or hand-set counts stay.
-  $("day").onchange = () => { d.date = $("day").value || null; d.dateTouched = true; drawSplit(); };
+  $("day").onchange = () => { d.date = $("day").value || null; d.dateTouched = true; };
   $("cat").onchange = () => { d.category = $("cat").value; d.catTouched = true; followCategory(d); drawSplit(); };
   $("paid").onclick = ev => { const b = ev.target.closest("[data-fam]"); if (!b) return; d.paid_by = Number(b.dataset.fam); markPaid(); drawSplit(); };
-  $("basis").onclick = ev => { const b = ev.target.closest("[data-basis]"); if (!b || b.dataset.basis === d.basis) return; d.basis = b.dataset.basis; d.basisTouched = true; d.splitTouched = true; resetSplit(); };
+  $("basis").onclick = ev => { const b = ev.target.closest("[data-basis]"); if (!b || b.dataset.basis === d.basis) return; d.basis = b.dataset.basis; drawSplit(); };
   $("ex").onsubmit = async ev => { ev.preventDefault(); pull(); await saveExpense(); };
   drawReceipt();
   drawSplit();
@@ -970,11 +963,11 @@ function renderExpenseView(e) {
   app.innerHTML = `${bar({ back: `#/t/${t.id}`, title: e.description, sub: t.name })}
     <div class="wrap"><div class="card">
       <div class="total"><span class="muted">${esc(e.date ? dayLong(e.date) : "Whole trip")}</span><span class="v">${money(e.amount_cents)}</span></div>
-      <p class="muted" style="margin-top:6px">${esc(famName(e.paid_by))} paid · ${esc(CATEGORIES[e.category].label)}${e.vendor ? ` · ${esc(e.vendor)}` : ""}</p>
+      <p class="muted" style="margin-top:6px">${esc(famName(e.paid_by))} paid · ${esc(catOf(e).label)}${e.vendor ? ` · ${esc(e.vendor)}` : ""}</p>
       ${e.receipt_key ? `<div class="receipt" style="margin:12px 0">${e.receipt_type === "application/pdf" ? `<div class="pdf">PDF</div>` : `<img src="/api/receipts/${esc(e.receipt_key)}" alt="Receipt photo">`}
         <a href="/api/receipts/${esc(e.receipt_key)}" target="_blank" rel="noopener">View receipt</a></div>` : `<p class="faint small">No receipt was added.</p>`}
-      <h2 style="margin-top:16px">How it was split</h2><p class="muted small">${BASES[e.basis].label}: ${esc(BASIS_HELP[e.basis])}</p>
-      <table class="t">${Object.keys(s.shares).map(id => `<tr><td>${esc(famName(id))}<div class="faint small">${s.units[id]} of ${plural(s.total, BASES[e.basis].unit, BASES[e.basis].units)}</div></td><td class="n">${money(s.shares[id])}</td></tr>`).join("")}
+      <h2 style="margin-top:16px">How it was split</h2><p class="muted small">${BASES[e.basis] ? `${BASES[e.basis].label}: ${esc(BASIS_HELP[e.basis])}` : "An older way of splitting."}</p>
+      <table class="t">${Object.keys(s.shares).map(id => `<tr><td>${esc(famName(id))}<div class="faint small">${s.units[id]} of ${plural(s.total, BASES[e.basis]?.unit || "share", BASES[e.basis]?.units || "shares")}</div></td><td class="n">${money(s.shares[id])}</td></tr>`).join("")}
         <tr><td><b>Total</b></td><td class="n"><b>${money(e.amount_cents)}</b></td></tr></table>
       <p class="hint">Added by ${esc(e.created_by)}${e.updated_by ? ` · last changed by ${esc(e.updated_by)}` : ""}. This trip is final; reopen it from Settle up to change anything.</p>
     </div></div>`;
@@ -983,17 +976,11 @@ function renderExpenseView(e) {
 function markPaid() {
   document.querySelectorAll("#paid [data-fam]").forEach(b => { const on = Number(b.dataset.fam) === Number(S.draft.paid_by); b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
 }
-// A category suggests its usual split method. It's taken up unless someone picked a
-// method, or typed counts that only mean something in the current one; a family
-// left out stays left out either way.
+// The kind of cost fixes the split; only Other lets them choose. Head counts ticked
+// so far are kept, so switching kinds and back doesn't lose them.
 function followCategory(d) {
-  const usual = CATEGORIES[d.category].basis;
-  if (d.basisTouched || d.basis === usual || Object.values(d.split).some(v => v != null && v > 0)) return;
-  const out = Object.fromEntries(Object.entries(d.split).filter(([, v]) => v === 0));
-  d.basis = usual;
-  d.split = { ...defaultSplit(usual, S.trip.families), ...out };
+  d.basis = CATEGORIES[d.category].basis;          // Other starts on who took part
 }
-function resetSplit() { S.draft.split = defaultSplit(S.draft.basis, S.trip.families); drawSplit(); }
 function cents(v) {
   let s = String(v).replace(/[$\s]/g, "");
   // A comma before the last one or two digits is a decimal comma ("12,50", "12,5", "1.250,00");
@@ -1005,56 +992,54 @@ function cents(v) {
 function drawSplit() {
   const d = S.draft, families = realFamilies();
   const el = document.getElementById("split"); if (!el) return;
-  const suggested = CATEGORIES[d.category].basis;
-  document.getElementById("basis").innerHTML = Object.entries(BASES).map(([k, b]) => `
+  const c = CATEGORIES[d.category];
+  // Only Other offers a choice; every other kind says how it's split.
+  document.getElementById("basis").innerHTML = c.choose ? Object.entries(BASES).map(([k, b]) => `
     <button type="button" class="choice ${d.basis === k ? "on" : ""}" data-basis="${k}" role="radio" aria-checked="${d.basis === k}">
-      <span class="dot"></span><span><b>${b.label}${k === suggested ? `<span class="tag">Usual for this category</span>` : ""}</b><small>${BASIS_HELP[k]}</small></span></button>`).join("");
+      <span class="dot"></span><span><b>${b.label}</b><small>${BASIS_HELP[k]}</small></span></button>`).join("")
+    : `<p class="muted small" style="margin:0 0 8px"><b>${BASES[d.basis].label}.</b> ${BASIS_HELP[d.basis]}</p>`;
   const amount = cents(d.amount);
   const s = shares({ ...d, amount_cents: amount }, families);
   const unit = n => plural(n, BASES[d.basis].unit, BASES[d.basis].units);
-  el.innerHTML = `<div class="incl">${families.map(f => {
-    // Not listed on the expense means automatic (0 on a custom split), the same as the money math.
-    const set = String(f.id) in d.split ? d.split[f.id] : d.basis === "custom" ? 0 : null, auto = autoUnits(d.basis, f, d.date);
-    const away = set == null && !auto;    // automatic, but nobody there
-    const inc = set !== 0 && !away;
-    const n = s.units[f.id] || 0;
-    return `<div class="r ${inc && n ? "" : "off"}"><input type="checkbox" data-inc="${f.id}" ${inc ? "checked" : ""} aria-label="Include the ${esc(f.name)} family">
+  const took = d.basis === "took_part";
+  el.innerHTML = `${took && families.length ? `<div class="head" style="margin:0 0 6px"><span class="f" style="margin:0">Who took part?</span>
+      <button type="button" class="link small" data-everyone>Tick everyone</button></div>` : ""}
+    <div class="incl">${families.map(f => {
+    const n = s.units[f.id] || 0, set = d.split[f.id];
+    if (!took) return `<div class="r ${n ? "" : "off"}"><span class="nm">${esc(f.name)}</span><span class="faint small">${n ? unit(n) : d.basis === "per_fencer" ? "No fencers" : "No fencing days"}</span>
+      <span class="amt">${n && amount ? money(s.shares[f.id]) : "—"}</span></div>`;
+    const inc = set > 0;
+    return `<div class="r ${inc ? "" : "off"}"><input type="checkbox" data-inc="${f.id}" ${inc ? "checked" : ""} aria-label="${esc(f.name)} took part">
       <span class="nm">${esc(f.name)}</span>
-      <input type="number" min="0" step="1" inputmode="numeric" data-units="${f.id}" value="${inc ? set ?? "" : ""}" placeholder="${d.basis === "custom" ? "0" : auto}" ${inc ? "" : "disabled"} aria-label="${esc(BASES[d.basis].units)} for ${esc(f.name)}">
-      <span class="amt">${!inc ? `<span class="faint small">${away ? (d.date ? "Not there that day" : "Nobody counts") : "Not sharing"}</span>` : n && amount ? money(s.shares[f.id]) : "—"}</span></div>`;
-  }).join("")}<div class="tot"><span>${unit(s.total)}</span><span>${s.total && amount ? `${money(Math.round(amount / s.total))} each` : ""}</span></div></div>`;
-  const dayNote = document.getElementById("daynote");
-  if (dayNote) dayNote.textContent = d.basis === "fencer" || d.basis === "fencer_day"
-    ? "For this split the day is only for the record: the cost is shared across every fencing day of the trip."
-    : d.basis === "person" || d.basis === "family" ? (() => {
-        const away = d.date ? families.filter(f => !autoUnits(d.basis, f, d.date)).map(f => f.name) : [];
-        if (!d.date) return "Shared by everyone on the trip, whichever days they came. Pick a day if it was only for that day.";
-        return (away.length ? `Not there that day, so not sharing: ${away.join(", ")}. ` : "")
-          + "Only families there on this day share the cost. Pick \"Whole trip\" if it covered more than one day.";
-      })() : "";
-  document.getElementById("splithint").textContent = d.basis === "custom" ? "Untick any family that isn't sharing this cost."
-    : `The numbers are filled in from who's on the trip (${BASES[d.basis].units}). Type a different number to change one, or untick a family that isn't sharing this cost.`;
+      <input type="number" min="1" max="50" step="1" inputmode="numeric" data-units="${f.id}" value="${inc ? set : ""}" ${inc ? "" : "disabled"} aria-label="How many from ${esc(f.name)}">
+      <span class="amt">${!inc ? `<span class="faint small">Didn't take part</span>` : amount ? money(s.shares[f.id]) : "—"}</span></div>`;
+  }).join("") || `<p class="faint">No families on the trip yet.</p>`}<div class="tot"><span>${unit(s.total)}</span><span>${s.total && amount ? `${money(Math.round(amount / s.total))} each` : ""}</span></div></div>`;
+  document.getElementById("splithint").textContent = took
+    ? "Tick each family that took part. The number starts at the family's size; change it if only some of them came."
+    : d.basis === "per_fencer" ? "Filled in from the fencers on the trip. Nothing to tick." : "Filled in from each fencer's fencing days (Families, then Fencing days). Nothing to tick.";
   document.getElementById("sum").innerHTML = amount
-    ? `<b>${money(amount)}</b>${s.total ? `split between ${plural(Object.keys(s.units).length, "family", "families")}` : `<span class="owe">Nobody included yet</span>`}`
+    ? `<b>${money(amount)}</b>${s.total ? `split between ${plural(Object.keys(s.units).length, "family", "families")}` : `<span class="owe">${took ? "Tick who took part" : "Nobody to split it among yet"}</span>`}`
     : `<b>Enter the amount</b>then pick who paid`;
+  // Ticking a family starts it at its size (at least 1); unticking leaves it out.
+  const start = f => Math.min(50, Math.max(1, familySize(f)));
+  el.onclick = ev => {
+    if (!ev.target.closest("[data-everyone]")) return;
+    for (const f of families) if (!(d.split[f.id] > 0)) d.split[f.id] = start(f);
+    drawSplit();
+  };
   el.onchange = ev => {
     const c = ev.target.closest("[data-inc]");
-    if (c) d.splitTouched = true;
-    if (!c) { if (ev.target.closest("[data-units]")?.value === "") drawSplit(); return; }   // left empty: show the count that stands
+    if (!c) { const u = ev.target.closest("[data-units]"); if (u && !(Number(u.value) >= 1)) drawSplit(); return; }   // left empty: show the count that stands
     const f = families.find(x => x.id === Number(c.dataset.inc));
-    // Ticking a family nobody marked as there would count 0 and look broken, so
-    // start it at 1. Unticking stores 0: a deliberate "not sharing" that sticks.
-    if (c.checked) d.split[c.dataset.inc] = d.basis === "custom" || !autoUnits(d.basis, f, d.date) ? 1 : null; else d.split[c.dataset.inc] = 0;
+    if (c.checked) d.split[c.dataset.inc] = start(f); else delete d.split[c.dataset.inc];
     drawSplit();
     el.querySelector(`[data-${c.checked ? "units" : "inc"}="${c.dataset.inc}"]`)?.focus();
   };
   el.oninput = ev => {
     const u = ev.target.closest("[data-units]"); if (!u) return;
-    d.splitTouched = true;
-    // Clearing a count to retype it: where "automatic" would count nobody (custom, or a
-    // family not there that day), wait for the number instead of switching the family off.
-    if (u.value === "" && (d.basis === "custom" || !autoUnits(d.basis, families.find(x => x.id === Number(u.dataset.units)), d.date))) return;
-    d.split[u.dataset.units] = u.value === "" ? null : Math.max(0, Number(u.value));
+    const n = Math.floor(Number(u.value));
+    if (!(n >= 1)) return;                  // clearing a count to retype it: wait for the number
+    d.split[u.dataset.units] = Math.min(50, n);
     let pos = null; try { pos = u.selectionStart; } catch {}
     drawSplit();
     const again = el.querySelector(`[data-units="${u.dataset.units}"]`); again.focus(); if (pos != null) try { again.setSelectionRange(pos, pos); } catch {}
@@ -1128,10 +1113,8 @@ function fillFromReceipt(f, d = S.draft) {
   // Only fill what they haven't chosen themselves.
   if (f.category && Object.hasOwn(CATEGORIES, f.category) && !d.catTouched) { d.category = f.category; $("cat").value = f.category; followCategory(d); }
   if (f.date && days.includes(f.date) && !d.dateTouched) { d.date = f.date; $("day").value = f.date; }
-  // Keep any sharing changes they made while the receipt was being read.
-  if (!d.splitTouched) d.split = defaultSplit(d.basis, S.trip.families);
   const out = f.date && !days.includes(f.date) ? ` The receipt is dated ${f.date}, which is outside the trip.` : "";
-  d.aiNote = `We filled in the form from the receipt. Check the amount and who's included before saving.${out}${f.notes ? " Note: " + f.notes : ""}`;
+  d.aiNote = `We filled in the form from the receipt. Check the amount and the kind of cost (it decides who pays) before saving.${out}${f.notes ? " Note: " + f.notes : ""}`;
   drawSplit();
 }
 
@@ -1221,16 +1204,15 @@ async function saveExpense() {
   if (amount_cents <= 0) { document.getElementById("amt").focus(); return toast("Enter the amount"); }
   if (!d.paid_by) { document.getElementById("paid").scrollIntoView({ block: "center" }); return toast("Pick the family that paid"); }
   const s = shares({ ...d, amount_cents }, S.trip.families);
-  if (!s.total) return toast("Include at least one family");
+  if (!s.total) return toast(d.basis === "took_part" ? "Tick who took part" : d.basis === "per_fencer" ? "There are no fencers on the trip yet" : "No fencer has fencing days ticked yet");
   const payer = S.trip.families.find(f => f.id === Number(d.paid_by));
   const body = { description: d.description, vendor: d.vendor, date: d.date, category: d.category, basis: d.basis,
     amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at, rev: d.rev, client_key: d.client_key,
-    ...(!d.id && payer?.uid && { paid_by_uid: payer.uid }) };
-  // A new expense with automatic shares can wait on the phone for a signal. Shares set by
-  // hand name families by number, and need someone looking at the trip as it is now.
-  const handSet = d.basis === "custom" || Object.values(d.split || {}).some(v => v != null);
-  const canWait = !d.id && !handSet, who = whoNow();
-  const needsSignal = "This one needs a signal, because its shares were set by hand. Save again when you have signal; it can't be added twice.";
+    ...(!d.id && payer?.uid && { paid_by_uid: payer.uid }),
+    // Family numbers can be reused after a delete, so the families ticked are named by their tags too.
+    ...(d.basis === "took_part" && { split_uids: Object.fromEntries(Object.keys(d.split).map(id => [id, S.trip.families.find(f => f.id === Number(id))?.uid])) }) };
+  // A new expense can wait on the phone for a signal; an edit needs one.
+  const canWait = !d.id, who = whoNow();
   // A family added or removed on another phone since the form opened would be charged
   // or dropped without this form showing it: catch up, show it, and let them check.
   let fresh;
@@ -1238,11 +1220,12 @@ async function saveExpense() {
   catch (e) {
     if (e instanceof AuthError) return renderLogin();
     if (e.unsure && canWait) { if (holdExpense(t, who, body, d.fromWait) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
-    if (e.unsure && !d.id) { d.unsent = true; keepDraft(); }
-    return toast(e.unsure && !d.id ? needsSignal : e.message);
+    return toast(e.message);
   }
-  // Who's on the trip, and which days: everything the shares on this form were worked out from.
-  const whoIs = tr => JSON.stringify(tr.families.map(f => [f.id, f.kind, f.days, f.people.map(p => [p.id, p.is_fencer, p.days, p.fencing_days])]));
+  // What the shares on this form were worked out from: for who took part, the families
+  // ticked; otherwise the fencers and their fencing days.
+  const whoIs = tr => JSON.stringify(d.basis === "took_part" ? Object.keys(d.split).map(id => [id, tr.families.find(f => f.id === Number(id))?.uid ?? null])
+    : tr.families.filter(f => f.kind !== "staff").map(f => [f.id, f.people.filter(p => p.is_fencer).map(p => [p.id, p.fencing_days])]));
   if (S.draft !== d) return;
   if (whoIs(fresh) !== whoIs(S.trip)) {
     S.trip = fresh;
@@ -1262,8 +1245,7 @@ async function saveExpense() {
     if (here) { app.inert = false; btn.disabled = false; btn.innerHTML = label; }
     // No answer: it may have saved. If it can wait, it waits (even if they've moved on).
     if (e.unsure && canWait) { if (holdExpense(t, who, body, d.fromWait) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
-    if (e.unsure && !d.id) { d.unsent = true; keepDraft(); }
-    return toast(e.unsure && !d.id ? "The connection dropped before the app heard back. " + needsSignal : e.message);
+    return toast(e.message);
   }
   // A retry of a save that had landed: it's on the trip as first sent.
   toast(r.already && !r.same ? "Your first save went through as it was then. Open it from the list to change it." : "Expense saved");
@@ -1331,7 +1313,7 @@ function tabSettle(el) {
   const statement = f => {
     const lines = expenses.filter(e => perExpense[e.id].shares[f.id]).map(e => {
       const s = perExpense[e.id];
-      return `<tr><td>${esc(e.description)}<div class="faint small">${s.units[f.id]} of ${plural(s.total, BASES[e.basis].unit, BASES[e.basis].units)}</div></td><td class="n">${money(s.shares[f.id])}</td></tr>`;
+      return `<tr><td>${esc(e.description)}<div class="faint small">${s.units[f.id]} of ${plural(s.total, BASES[e.basis]?.unit || "share", BASES[e.basis]?.units || "shares")}</div></td><td class="n">${money(s.shares[f.id])}</td></tr>`;
     }).join("");
     const r = rows[f.id];
     const openIt = new URLSearchParams(location.hash.split("?")[1] || "").get("open") === String(f.id);
@@ -1344,7 +1326,7 @@ function tabSettle(el) {
   const blocked = bad.length || !expenses.length || !t.treasurer_name;
   el.innerHTML = `
     ${bad.length ? `<div class="callout warn">${plural(bad.length, "expense has", "expenses have")} nobody included: ${bad.map(e => esc(e.description)).join(", ")}. Open ${bad.length > 1 ? "them" : "it"} from Expenses and tick who's sharing.</div>` : ""}
-    ${noFence.length ? `<div class="callout warn">${noFence.map(p => esc(p.name)).join(", ")} ${noFence.length > 1 ? "have" : "has"} no fencing days ticked, so they pay nothing toward the coach's stay. Check Families.</div>` : ""}
+    ${noFence.length ? `<div class="callout warn">${noFence.map(p => esc(p.name)).join(", ")} ${noFence.length > 1 ? "have" : "has"} no fencing days ticked, so ${noFence.length > 1 ? "they pay" : "pays"} nothing toward the coach's hotel and meals. <a href="#/t/${S.trip.tournament.id}/fencing">Check fencing days</a>.</div>` : ""}
     ${t.treasurer_name ? `<div class="card"><div class="eyebrow">Treasurer</div><h2 style="margin-top:4px">${esc(tname(t))}</h2>
         ${t.treasurer_notes ? `<div class="paynote"><b>Send money to:</b> ${esc(t.treasurer_notes)}</div>` : ""}</div>` : needTreasurerCallout(t)}
     <div class="card ledger"><h2>${final() ? "Who pays what" : "Who will pay what"}</h2>
@@ -1475,14 +1457,6 @@ app.addEventListener("click", async ev => {
       case "pick-staff": return pickStaff();
       case "add-my-family": return addFamily({ mine: true });
       case "pay-notes": location.hash = `#/t/${t.id}/f/${id}`; return;
-      case "own-days": {
-        const fid = S.trip.families.find(f => f.people.some(p => p.id === id)).id;
-        return famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { own_days: true } }), "Now has own days", `[data-own="${id}"]`);
-      }
-      case "family-days": {
-        const fid = S.trip.families.find(f => f.people.some(p => p.id === id)).id;
-        return famSave(fid, () => api(`/people/${id}`, { method: "PATCH", body: { own_days: false } }), "Back on the family's days", `[data-pname="${id}"]`);
-      }
       case "remove-person": {
         const f = S.trip.families.find(f => f.people.some(p => p.id === id)), p = f.people.find(p => p.id === id);
         if (!(await confirmSheet(`Remove ${esc(p.name)}?`, "They won't count toward any expense on this trip.", "Remove", true))) return;

@@ -23,7 +23,7 @@ const range = t => {
   return t.start_date === t.end_date ? utc(t.start_date).toLocaleDateString("en-US", { ...o, year: "numeric" })
     : `${utc(t.start_date).toLocaleDateString("en-US", o)} - ${utc(t.end_date).toLocaleDateString("en-US", { ...o, year: "numeric" })}`;
 };
-const units = (n, basis) => `${n} ${n === 1 ? BASES[basis].unit : BASES[basis].units}`;
+const units = (n, basis) => `${n} ${n === 1 ? BASES[basis]?.unit || "share" : BASES[basis]?.units || "shares"}`;
 
 export async function exportPdf(trip) {
   const { PDFDocument, StandardFonts, rgb } = await lib();
@@ -194,7 +194,7 @@ export async function exportPdf(trip) {
     { label: "Day", w: 66, f: e => day(e.date) },
     { label: "Expense", w: 156, f: e => e.description, sub: e => e.vendor || CATEGORIES[e.category]?.label || "" },
     { label: "Paid by", w: 66, f: e => fam(e.paid_by) },
-    { label: "Split", w: 104, f: e => BASES[e.basis].label, sub: e => units(perExpense[e.id].total, e.basis) },
+    { label: "Split", w: 104, f: e => BASES[e.basis]?.label || "Older split", sub: e => units(perExpense[e.id].total, e.basis) },
     { label: "Receipt", w: 50, f: e => rnum.get(e.id) || "none", color: e => rnum.has(e.id) ? C.ink : C.grey },
     { label: "Amount", w: CW - 442, align: "right", f: e => money(e.amount_cents), bold: true },
   ], expenses, { totals: ["", `${expenses.length} expenses`, "", "", "", money(expenses.reduce((n, e) => n + e.amount_cents, 0))], rowH: 22 });   // the column's own sum
@@ -233,14 +233,14 @@ export async function exportPdf(trip) {
     y -= 44;
   }
 
-  // Who was there and who fenced, by day: the basis for every count above.
+  // Who fenced which day: the basis for the coach's costs split by fencing days.
   {
     const days = []; for (let d = utc(t.start_date); d <= utc(t.end_date) && days.length < 60; d.setUTCDate(d.getUTCDate() + 1)) days.push(d.toISOString().slice(0, 10));
-    const people = families.filter(f => f.kind !== "staff").flatMap(f => f.people.map(p => ({ ...p, fam: f.name })));
+    const people = families.filter(f => f.kind !== "staff").flatMap(f => f.people.filter(p => p.is_fencer).map(p => ({ ...p, fam: f.name })));
     const dayW = Math.min(46, (CW - 170) / days.length);
-    runningTitle = "Who was there, by day";
+    runningTitle = "Fencing days";
     need(64 + 30 + 20 + 16 * Math.min(people.length, 4)); // title, note, header and a few rows stay together
-    section("Who was there, by day", "The basis for every count in this record. x = there that day; F = there and fenced that day (one fencer-day). Per-person costs count the people there on the cost's day; per-fencer-day costs count the F marks.");
+    section("Fencing days", "F = fenced that day: one share of every cost split by fencing days (the coach's hotel, getting around and own meals). Costs split equally per fencer count each fencer once. Team meals and outings count the head counts ticked on each one.");
     const head = () => {
       rect(M, y - 7, CW, 20, C.navy2);
       text("FAMILY / PERSON", M + 7, y, { f: bold, size: 7, color: C.white });
@@ -253,10 +253,10 @@ export async function exportPdf(trip) {
     people.forEach((p, i) => {
       if (y - 16 < BOTTOM) { newPage(); head(); }
       if (i % 2) rect(M, y - 5, CW, 16, C.zebra);
-      text(`${p.fam}: ${p.name}${p.is_fencer ? " (fencer)" : ""}`, M + 7, y, { size: 8.5, w: 160 });
+      text(`${p.fam}: ${p.name}`, M + 7, y, { size: 8.5, w: 160 });
       days.forEach((d, j) => {
-        const mark = p.is_fencer && p.fencing_days.includes(d) ? "F" : p.days.includes(d) ? "x" : "-";
-        text(mark, M + 170 + j * dayW, y, { f: mark === "F" ? bold : font, size: 8.5, color: mark === "-" ? C.line : mark === "F" ? C.navy : C.ink2, w: dayW, align: "center" });
+        const mark = p.fencing_days.includes(d) ? "F" : "-";
+        text(mark, M + 170 + j * dayW, y, { f: mark === "F" ? bold : font, size: 8.5, color: mark === "-" ? C.line : C.navy, w: dayW, align: "center" });
       });
       y -= 16;
     });
@@ -271,7 +271,7 @@ export async function exportPdf(trip) {
     rect(M, y - 34, CW, 46, C.zebra, C.line); rect(M, y - 34, 46, 46, C.navy);
     text(rnum.get(e.id), M, y - 15, { f: bold, size: 13, color: C.gold, w: 46, align: "center" });
     text(e.description, M + 58, y - 4, { f: bold, size: 12, color: C.navy, w: CW - 190 });
-    text(`${day(e.date)}   |   paid by ${fam(e.paid_by)}   |   ${BASES[e.basis].label.toLowerCase()}${e.vendor ? "   |   " + e.vendor : ""}`, M + 58, y - 22, { size: 8, color: C.grey, w: CW - 190 });
+    text(`${day(e.date)}   |   paid by ${fam(e.paid_by)}   |   ${(BASES[e.basis]?.label || "older split").toLowerCase()}${e.vendor ? "   |   " + e.vendor : ""}`, M + 58, y - 22, { size: 8, color: C.grey, w: CW - 190 });
     text(money(e.amount_cents), W - M - 124, y - 13, { f: bold, size: 15, w: 114, align: "right" });
     const top = y - 52;
     const frame = (draw, w0, h0, avail) => {

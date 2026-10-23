@@ -14,6 +14,26 @@ export async function stamp(B, cookie, p, m, b) {
     return t[2] ? { ticked: d.payments.filter(x => x.paid_at).length, ...(b || {}) }
       : { seen_start: d.tournament.start_date, seen_end: d.tournament.end_date, ...(b || {}) };
   }
+  // Expenses written for the old splits (from before who-took-part) become the new ones:
+  // an untouched per-person or per-family split ticks every family, one person each.
+  const ex = /^\/tournaments\/(\d+)\/expenses$/.exec(p) || /^\/expenses\/(\d+)$/.exec(p);
+  if (ex && b && b.basis && !["took_part", "per_fencer", "fencer_day"].includes(b.basis)) {
+    let tid = /^\/tournaments/.test(p) ? Number(ex[1]) : null;
+    if (tid == null) {
+      const list = await (await fetch(B + "/tournaments", H)).json();
+      for (const t of list.trips || list) { const d = await (await fetch(`${B}/tournaments/${t.id}`, H)).json(); if (d.expenses?.some(e => e.id === Number(ex[1]))) tid = t.id; }
+    }
+    const d = tid != null ? await (await fetch(`${B}/tournaments/${tid}`, H)).json() : { families: [] };
+    const basis = b.basis === "fencer" ? "per_fencer" : b.basis === "fencer_day" ? "fencer_day" : "took_part";
+    const category = ["transport", "supplies"].includes(b.category) ? "other" : b.category === "meal" && basis !== "took_part" ? "other" : b.category;
+    let split = {};
+    if (basis === "took_part") {
+      const set = Object.entries(b.split || {}).filter(([, v]) => v != null);
+      if (set.some(([, v]) => v > 0)) split = Object.fromEntries(set.filter(([, v]) => v > 0));
+      else split = Object.fromEntries((d.families || []).filter(f => f.kind !== "staff" && !set.some(([k]) => Number(k) === f.id)).map(f => [f.id, 1]));
+    }
+    b = { ...b, basis, category, split };
+  }
   const x = /^\/(families|people|expenses)\/(\d+)(\/people)?$/.exec(p);
   if (!x) return b;
   const id = Number(x[2]);

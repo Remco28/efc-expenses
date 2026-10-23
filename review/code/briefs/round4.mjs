@@ -17,5 +17,5 @@ ok((await call(`/expenses/${e2}`, "PATCH", { ...ex, description: "Stale save", c
 ok((await call(`/expenses/${e2}`, "DELETE", { created_at: c1 })).s === 409 || e1 !== e2, "a stale editor can't delete the expense that took its id");
 tr = (await call(`/tournaments/${t}`)).d; const c2 = tr.expenses.find(x => x.id === e2).created_at;
 ok((await call(`/expenses/${e2}`, "PATCH", { ...ex, description: "Dinner, fixed", created_at: c2 })).s === 200, "the right editor still saves");
-ok((await fetch(B + `/expenses/${e2}`, { method: "PATCH", headers: { cookie, "x-user-name": "T", "content-type": "application/json" }, body: JSON.stringify({ ...ex, description: "Old page" }) })).status === 409, "a page from before revisions (no revision sent) is told to reload");
+ok((await fetch(B + `/expenses/${e2}`, { method: "PATCH", headers: { cookie, "x-user-name": "T", "content-type": "application/json" }, body: JSON.stringify({ ...ex, basis: "took_part", split: { [fams[0]]: 1 }, description: "Old page" }) })).status === 409, "a page from before revisions (no revision sent) is told to reload");
 console.log(`  trip ${t}`);

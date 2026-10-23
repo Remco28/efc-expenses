@@ -1,24 +1,26 @@
 # EFC Trip Expenses
 
-A small web app our fencing club's parents use to track and split shared costs on travel tournaments: team meals, the coach's travel and stay, and ground transport. Whoever pays adds the expense, optionally with a photo or PDF of the receipt, which Claude reads to fill in the form. Settling goes through one volunteer treasurer. A trip has no treasurer until someone signs up, and the app nudges the group until one does. When the trip is finalized, every family that owes pays the treasurer, and the treasurer pays every family that's owed: one payment per family. The treasurer has a checklist screen to tick off money in and money out. Anyone can download a PDF record: a summary page followed by every receipt.
+A small web app our fencing club's parents use to track and split shared costs on travel tournaments: team meals and outings, and the coach's travel, hotel, getting around and own meals. Whoever pays adds the expense, optionally with a photo or PDF of the receipt, which Claude reads to fill in the form. Settling goes through one volunteer treasurer. A trip has no treasurer until someone signs up, and the app nudges the group until one does. When the trip is finalized, every family that owes pays the treasurer, and the treasurer pays every family that's owed: one payment per family. The treasurer has a checklist screen to tick off money in and money out. Anyone can download a PDF record: a summary page followed by every receipt.
 
-Coaching fees are not tracked here, because the coach bills those directly. Personal costs, such as your own flight or room, are not tracked either.
+Coaching fees are not tracked here, because the coach bills those directly. Personal costs, such as your own flight, room, parking or gas, are not tracked either, and neither are team supplies (the coach's responsibility) or snacks a parent buys for the team.
 
 ## How costs are split
 
-Each shared cost is split according to **what it was for**, and only among **the people it was for**. Every expense has a split basis. The category suggests one, and whoever enters the expense can change it.
+Families and their people are on the trip as a whole; nobody records which days a family is there. The one per-day fact is **which days each fencer actually competes**, ticked on the family's screen or on the trip's Fencing days screen. Anyone can fix them until the trip is finalized.
 
-| Split | One share per… | Default for |
+Each kind of expense has its split:
+
+| Kind | Split | One share per… |
 |---|---|---|
-| Per person | each person there that day: fencer, parent or sibling | Team meals |
-| Per fencer | each fencer at the tournament | The coach getting there and back (airfare, bags); team supplies |
-| Per fencer-day | each day each fencer competes | The coach's stay (hotel, meals, rental car) |
-| Per family | each family that used it | Ground transport (van, gas, parking); other |
-| Custom | shares typed in by hand | — |
+| Team meal or outing | Who took part | each person counted: the person entering it ticks the families who went, each with a head count that starts at the family's size and can be changed |
+| Coach's own meals (breakfast, coffee, lunch at the venue) | By fencing days | each day each fencer competes |
+| Coach travel there and back (airfare, bags) | Equal per fencer | each fencer on the trip |
+| Coach hotel and getting around (hotel, rental car, gas, rides, parking) | By fencing days | each day each fencer competes |
+| Other | The person entering it picks one of the three | |
 
-Coach costs come in two kinds. Getting the coach there costs the same whether your fencer competes one day or ten, so it is split equally per fencer. Keeping the coach there grows with every extra day, so it is split by the days each kid actually fences.
+Team meals are opt-in: nobody is included until someone ticks who took part, because families often eat on their own or in separate groups. When the coach comes along, the coach is never ticked; the families who went cover the coach's share. Coaches and staff never pay a share of anything.
 
-For a per-person or per-family split, the families that were there on that day are included automatically. Anyone can untick a family or change a head count.
+Getting the coach there costs the same whether your fencer competes one day or ten, so it is split equally per fencer. Keeping the coach there grows with every extra day, so it is split by the days each kid actually fences. A fencer with no fencing days ticked still pays their share of the coach's travel and nothing toward the rest; the app warns about it.
 
 Shares are computed to the cent, and they always add up to the expense total. The math lives in [`public/split.js`](public/split.js) and is covered by `npm test`.
 

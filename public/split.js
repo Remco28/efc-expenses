@@ -1,22 +1,21 @@
 // The splitting rules. Shared by the browser app, the PDF export, the
-// server (for categories) and the tests, so there is one copy of the math.
+// server and the tests, so there is one copy of the math.
 
+// Three ways to split. Who took part is ticked on each expense, with a head
+// count per family; the other two follow the fencers and their fencing days.
 export const BASES = {
-  person: { label: "Per person", unit: "person", units: "people" },
-  fencer: { label: "Per fencer", unit: "fencer", units: "fencers" },
-  fencer_day: { label: "Per fencer-day", unit: "fencer-day", units: "fencer-days" },
-  family: { label: "Per family", unit: "family", units: "families" },
-  custom: { label: "Custom", unit: "share", units: "shares" },
+  took_part: { label: "Who took part", unit: "person", units: "people" },
+  per_fencer: { label: "Equal per fencer", unit: "fencer", units: "fencers" },
+  fencer_day: { label: "By fencing days", unit: "fencing day", units: "fencing days" },
 };
 
-// Each category suggests a split; whoever enters the expense can change it.
+// Each kind of expense has its split; only Other lets whoever enters it choose.
 export const CATEGORIES = {
-  meal: { label: "Team meal", basis: "person" },
-  coach_travel: { label: "Coach travel there and back (airfare, bags)", basis: "fencer" },
-  coach_stay: { label: "Coach stay (hotel, meals, car)", basis: "fencer_day" },
-  transport: { label: "Ground transport (van, gas, parking)", basis: "family" },
-  supplies: { label: "Team supplies", basis: "fencer" },
-  other: { label: "Other", basis: "family" },
+  meal: { label: "Team meal or outing", basis: "took_part" },
+  coach_meals: { label: "Coach's own meals (breakfast, coffee, lunch at the venue)", basis: "fencer_day" },
+  coach_travel: { label: "Coach travel there and back (airfare, bags)", basis: "per_fencer" },
+  coach_stay: { label: "Coach hotel and getting around (hotel, rental car, gas, rides, parking)", basis: "fencer_day" },
+  other: { label: "Other", basis: "took_part", choose: true },
 };
 
 // Every date from start to end inclusive, as YYYY-MM-DD.
@@ -31,45 +30,22 @@ export function tournamentDays(start, end) {
   return out;
 }
 
-// Units a family counts for on an expense when nobody has set them by hand.
-// `date` only matters for per-person and per-family: who was there that day.
-export function autoUnits(basis, family, date) {
-  if (family.kind === "staff") return 0;          // coaches and staff never share costs
-  // Only people on the trip at all (at least one day) count; with a day, only
-  // those there that day.
-  const people = (family.people || []).filter(p => p.days.length);
-  const fencers = people.filter(p => p.is_fencer);
-  const there = p => !date || p.days.includes(date);
-  switch (basis) {
-    case "person": return people.filter(there).length;
-    case "fencer": return fencers.length;
-    case "fencer_day": return fencers.reduce((n, p) => n + p.fencing_days.length, 0);
-    case "family": return people.some(there) ? 1 : 0;
-    default: return 0;
-  }
-}
+// The head count a family starts with when it's ticked: everyone in it.
+export const familySize = family => (family.people || []).length;
 
-// The split a new expense starts with. Every family is on "automatic" (null):
-// who was there decides, so later changes to families or days flow through.
-// A hand-set number overrides it, and 0 means deliberately not sharing.
-export function defaultSplit(basis, families) {
-  const split = {};
-  for (const f of families) if (f.kind !== "staff") split[f.id] = basis === "custom" ? 1 : null;
-  return split;
-}
-
-// Units per family. A family not listed on the expense is on automatic, the
-// same as null, so families added later share by who was there. Custom splits
-// are all hand-set, so there an unlisted family counts 0.
+// Units per family. Coaches and staff never share a cost.
+// Who took part: the head count saved for each family ticked (a family not
+// listed didn't take part). The others: each family's fencers, or their fencing days.
 export function unitsFor(expense, families) {
   const split = expense.split || {};
   const units = {};
   for (const f of families) {
     if (f.kind === "staff") continue;
-    const id = String(f.id);
-    const set = id in split ? split[id] : expense.basis === "custom" ? 0 : null;
-    const n = set == null ? autoUnits(expense.basis, f, expense.date) : Number(set);
-    if (Number.isFinite(n) && n > 0) units[id] = Math.min(n, 1e6);   // the server caps hand-set counts lower; this keeps the math finite
+    const fencers = (f.people || []).filter(p => p.is_fencer);
+    const n = expense.basis === "took_part" ? Number(split[String(f.id)] ?? 0)
+      : expense.basis === "per_fencer" ? fencers.length
+      : expense.basis === "fencer_day" ? fencers.reduce((k, p) => k + p.fencing_days.length, 0) : 0;
+    if (Number.isFinite(n) && n > 0) units[String(f.id)] = Math.min(n, 1e6);
   }
   return units;
 }

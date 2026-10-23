@@ -120,7 +120,7 @@ async function purgeExpired(env: Env) {
 // Everything a trip's money depends on, as one string, computed by the database.
 const FINGERPRINT_SQL = `
   (SELECT COALESCE(group_concat(x, ';'), '') FROM (SELECT id || '|' || amount_cents || '|' || paid_by || '|' || basis || '|' || COALESCE(date, '') || '|' || split AS x FROM expenses WHERE tournament_id = ? ORDER BY id))
-  || '#' || (SELECT COALESCE(group_concat(x, ';'), '') FROM (SELECT p.id || '|' || p.days || '|' || (SELECT COALESCE(group_concat(r.value), '') FROM json_each(p.rest_days) r WHERE r.value IN (SELECT value FROM json_each(p.days))) || '|' || p.is_fencer AS x FROM people p JOIN families f ON f.id = p.family_id WHERE f.tournament_id = ? ORDER BY p.id))
+  || '#' || (SELECT COALESCE(group_concat(x, ';'), '') FROM (SELECT p.id || '|' || p.family_id || '|' || p.is_fencer || '|' || CASE WHEN p.is_fencer = 1 THEN p.fencing_days ELSE '' END AS x FROM people p JOIN families f ON f.id = p.family_id WHERE f.tournament_id = ? ORDER BY p.id))
   || '#' || (SELECT COALESCE(group_concat(x, ';'), '') FROM (SELECT id || '|' || kind AS x FROM families WHERE tournament_id = ? ORDER BY id))
   || '#' || (SELECT COALESCE(treasurer_family_id, '') || '|' || COALESCE(treasurer_name, '') FROM tournaments WHERE id = ?)`;
 async function fingerprint(env: Env, tid: number): Promise<string> {
@@ -173,13 +173,12 @@ async function loadTrip(env: Env, tid: number) {
     env.DB.prepare("SELECT * FROM payments WHERE tournament_id = ? ORDER BY direction, amount_cents DESC").bind(tid),
     env.DB.prepare("SELECT * FROM activity WHERE tournament_id = ? ORDER BY id DESC LIMIT 50").bind(tid),
   ]);
-  // Fencing days are the days they're there, less the days they rest. Every screen, the
-  // money and finalize read them from here.
-  const people = (ppl.results as any[]).map(({ fencing_days: _, ...p }) => {
-    const days: string[] = JSON.parse(p.days), rest: string[] = JSON.parse(p.rest_days);
-    return { ...p, is_fencer: !!p.is_fencer, own_days: !!p.own_days, days, fencing_days: p.is_fencer ? days.filter(d => !rest.includes(d)) : [] };
-  });
-  const families = (fam.results as any[]).map(f => ({ ...f, days: JSON.parse(f.days), people: people.filter(p => p.family_id === f.id) }));
+  // A person's fencing days count only while they're a fencer (unticking Fencer keeps them,
+  // so ticking it again brings them back). Every screen, the money and finalize read them here.
+  // `days` stays empty for a page from before families stopped having days.
+  const people = (ppl.results as any[]).map(({ days: _d, own_days: _o, rest_days: _r, ...p }) =>
+    ({ ...p, is_fencer: !!p.is_fencer, days: [], fencing_days: p.is_fencer ? JSON.parse(p.fencing_days) : [] }));
+  const families = (fam.results as any[]).map(f => ({ ...f, days: [], people: people.filter(p => p.family_id === f.id) }));
   const expenses = (exp.results as any[]).map(e => ({ ...e, split: JSON.parse(e.split) }));
   return { tournament: t, families, expenses, payments: pay.results, activity: act.results };
 }
@@ -203,24 +202,35 @@ async function expenseInput(env: Env, tid: number, b: any) {
   const staffIds = new Set(staffRows.map(x => x.id as number));
   const amount = Math.round(Number(b.amount_cents));
   if (!Number.isFinite(amount) || amount <= 0) throw new HttpError(400, "Amount must be more than zero");
-  if (!has(BASES, b.basis)) throw new HttpError(400, "Unknown split");
   if (!has(CATEGORIES, b.category)) throw new HttpError(400, "Unknown category");
+  // The kind fixes the split; only Other lets whoever enters it choose.
+  const cat = (CATEGORIES as any)[b.category];
+  const basis = cat.choose ? b.basis : cat.basis;
+  if (!has(BASES, basis)) throw new HttpError(400, "Unknown split");
   if (!ids.has(Number(b.paid_by))) throw new HttpError(400, "Pick the family that paid");
-  const split: Record<string, number | null> = {};
-  for (const [k, v] of Object.entries(b.split || {})) {
-    if (k !== String(Number(k)) || !ids.has(Number(k)) || staffIds.has(Number(k))) continue;   // "01" or " 1" would be stored but never read
-    const n = Number(v);
-    if (v != null && (!Number.isFinite(n) || n < 0 || n > 1000)) throw new HttpError(400, "Shares must be between 0 and 1000");
-    split[k] = v == null ? null : n;
+  // Who took part: a head count per family ticked. The other splits follow the fencers.
+  const split: Record<string, number> = {};
+  if (basis === "took_part") {
+    // Family numbers can be reused after a delete: a form sends each ticked family's tag.
+    const tags = b.split_uids && typeof b.split_uids === "object" ? b.split_uids : null;
+    const { results: famRows } = tags ? await env.DB.prepare("SELECT id, uid FROM families WHERE tournament_id = ?").bind(tid).all<any>() : { results: [] };
+    for (const [k, v] of Object.entries(b.split || {})) {
+      if (k !== String(Number(k)) || staffIds.has(Number(k))) continue;   // "01" or " 1" would be stored but never read; staff never pay
+      const n = Number(v);
+      if (v == null || n === 0) continue;
+      if (!Number.isInteger(n) || n < 0 || n > 50) throw new HttpError(400, "A head count is a whole number from 1 to 50");
+      if (!ids.has(Number(k)) || (tags && famRows.find(f => f.id === Number(k))?.uid !== tags[k]))
+        throw new HttpError(409, "A family ticked on this was removed from the trip. Check who took part, then save again.");
+      split[k] = n;
+    }
+    if (!Object.keys(split).length) throw new HttpError(400, "Tick who took part");
   }
-  // An empty split means everyone on automatic, except for custom splits, which are all hand-set.
-  if (b.basis === "custom" && !Object.values(split).some(v => (v ?? 0) > 0)) throw new HttpError(400, "Give at least one family a share");
   return {
     description: str(b.description) || CATEGORIES[b.category].label,
     vendor: str(b.vendor),
     date: isDate(b.date) ? b.date : null,
     category: b.category,
-    basis: b.basis,
+    basis,
     amount_cents: amount,
     paid_by: Number(b.paid_by),
     split: JSON.stringify(split),
@@ -246,24 +256,26 @@ async function resetSandbox(env: Env, req: Request, tid: number, name: string) {
       .bind(SANDBOX.name, SANDBOX.location, SANDBOX.start_date, SANDBOX.end_date, tid),
   ];
   for (const [fname, pay, people] of SANDBOX.families) {
-    const famDays = [...new Set(people.flatMap(([, , days]: [string, number, string[], string[]]) => days))].sort();
-    stmts.push(env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes, days) VALUES (?, ?, ?, ?)").bind(tid, fname, pay, JSON.stringify(famDays)));
-    for (const [pn, fencer, days, fdays] of people as [string, number, string[], string[]][])
-      stmts.push(env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, rest_days, own_days) VALUES (${famId}, ?, ?, ?, ?, ?)`)
-        .bind(tid, fname, pn, fencer, JSON.stringify(days), JSON.stringify(fencer ? days.filter(d => !fdays.includes(d)) : []), days.length === famDays.length ? 0 : 1));
+    stmts.push(env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes, days) VALUES (?, ?, ?, '[]')").bind(tid, fname, pay));
+    for (const [pn, fencer, fdays] of people as [string, number, string[]][])
+      stmts.push(env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, fencing_days) VALUES (${famId}, ?, ?, '[]', ?)`)
+        .bind(tid, fname, pn, fencer, JSON.stringify(fdays)));
   }
   for (const [sname, role, pay] of SANDBOX.staff || [])
     stmts.push(env.DB.prepare("INSERT INTO families (tournament_id, name, pay_notes, days, kind, role) VALUES (?, ?, ?, '[]', 'staff', ?)").bind(tid, sname, pay, role));
   const stamp = now();
-  for (const [desc, vendor, date, cat, basis, cents, payer, image] of SANDBOX.expenses) {
+  for (const [desc, vendor, date, cat, cents, payer, image, took] of SANDBOX.expenses as any[]) {
     let key: string | null = null;
     if (image) {
       const img = await env.ASSETS.fetch(new URL(image, req.url));
       if (img.ok) { key = `t${tid}/${crypto.randomUUID()}`; await env.RECEIPTS.put(key, img.body, { httpMetadata: { contentType: "image/jpeg" } }); }
     }
-    // An empty split means every family on automatic.
+    // Who took part names families; their ids are only known inside the batch.
+    const parts = Object.entries(took || {}) as [string, number][];
+    const split = parts.length ? `json_object(${parts.map(() => `CAST(${famId} AS TEXT), ?`).join(", ")})` : "'{}'";
     stmts.push(env.DB.prepare(`INSERT INTO expenses (tournament_id, description, vendor, date, category, basis, amount_cents, paid_by, split, receipt_key, receipt_type, created_at, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ${famId}, '{}', ?, ?, ?, 'Practice trip')`).bind(tid, desc, vendor, date, cat, basis, cents, tid, payer, key, key ? "image/jpeg" : null, stamp));
+      VALUES (?, ?, ?, ?, ?, ?, ?, ${famId}, ${split}, ?, ?, ?, 'Practice trip')`)
+      .bind(tid, desc, vendor, date, cat, (CATEGORIES as any)[cat].basis, cents, tid, payer, ...parts.flatMap(([f, n]) => [tid, f, n]), key, key ? "image/jpeg" : null, stamp));
   }
   stmts.push(env.DB.prepare("INSERT INTO activity (tournament_id, at, who, what) VALUES (?, ?, ?, ?)").bind(tid, stamp, name, "reset the practice trip to its starting point"));
   await env.DB.batch(stmts);
@@ -304,12 +316,13 @@ async function readReceipt(env: Env, key: string, t: any) {
         text: `This is a receipt from a youth fencing team's trip to ${t.name}${t.location ? " in " + t.location : ""}, ${t.start_date} to ${t.end_date}.
 Read it and fill in:
 - vendor: the business name
-- description: a few words for a list of team expenses, like "Team lunch" or "Coach hotel, 2 nights"
+- description: a few words for a list of team expenses, like "Team dinner" or "Coach hotel, 2 nights"
 - total: the final amount charged, including tax and tip, as a number in dollars
 - date: the date of purchase as YYYY-MM-DD (assume the trip's year if the receipt omits it)
 - category, one of:
 ${categories}
-  (A hotel, flight or meal for one person is usually the coach's.)
+  (A hotel, flight, rental car, gas or ride is usually the coach's. A meal for one person,
+  coffee or breakfast is usually the coach's own meal; a meal for several people is a team meal.)
 - notes: anything a parent checking this should know, such as a handwritten tip or a total you weren't sure of; otherwise null
 Use null for anything you can't read.`,
       }],
@@ -392,7 +405,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const seenEnd = b.start_date == null && b.end_date == null ? t.end_date : b.seen_end;
       if (seenStart !== t.start_date || seenEnd !== t.end_date) throw stale();
       if (moved && tripDays(start, end) > MAX_TRIP_DAYS) throw new HttpError(400, `A trip can be at most ${MAX_TRIP_DAYS} days`);
-      // Days outside new dates come off everyone's attendance, so
+      // Days outside new dates come off everyone's fencing days (fencers and not), so
       // no split keeps counting a day nobody can see or untick any more. The
       // database trims each list as it stands, so a tap landing meanwhile is kept.
       const datesNow = "EXISTS (SELECT 1 FROM tournaments WHERE id = ?3 AND status = 'open' AND deleted_at IS NULL AND start_date = ?1 AND end_date = ?2)";
@@ -402,8 +415,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         env.DB.prepare("UPDATE tournaments SET name = ?4, location = ?5, start_date = ?1, end_date = ?2 WHERE id = ?3 AND status = 'open' AND deleted_at IS NULL AND start_date = ?6 AND end_date = ?7")
           .bind(start, end, tid, str(b.name) || t.name, b.location == null ? t.location : str(b.location), seenStart, seenEnd),
         // The trims apply only if the dates above did.
-        env.DB.prepare(`UPDATE families SET days = ${keep("families.days")} WHERE tournament_id = ?3 AND ${datesNow}`).bind(start, end, tid),
-        env.DB.prepare(`UPDATE people SET days = ${keep("people.days")}
+        env.DB.prepare(`UPDATE people SET fencing_days = ${keep("people.fencing_days")}
           WHERE family_id IN (SELECT id FROM families WHERE tournament_id = ?3) AND ${datesNow}`).bind(start, end, tid),
       ]);
       if (!res[0].meta.changes) throw new HttpError(409, "The trip was just finalized, or its dates changed on another phone. Reload and check.");
@@ -532,9 +544,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     return json({ ok: true });
   }
 
-  // Families and people. Days are set per family; everyone follows them unless
-  // they have their own (own_days). A fencer fences every day they're there except
-  // their rest days. people.days stays the source of truth for every split.
+  // Families and people. A family and its people are on the whole trip; the only
+  // per-day fact is which days each fencer fences.
   if ((m = path.match(/^\/tournaments\/(\d+)\/families$/)) && method === "POST") {
     const tid = Number(m[1]);
     const b = await body(req);
@@ -544,11 +555,9 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     await openTournament(env, tid);
     const staff = b.kind === "staff";
     if (!str(b.name)) throw new HttpError(400, staff ? "Give their name" : "Give the family a name");
-    const all = await allowedDays(env, tid);
-    const days = staff ? [] : b.days == null ? [...all].sort() : cleanDays(b.days, all);
     const role = staff ? str(b.role, 40) || "Coach" : "";
-    const r = await env.DB.prepare(`INSERT INTO families (tournament_id, name, days, kind, role, pay_notes, client_key) SELECT ?, ?, ?, ?, ?, ?, ? WHERE ${OPEN} AND ${SAME_SPAN} ON CONFLICT DO NOTHING RETURNING id`)
-      .bind(tid, str(b.name), JSON.stringify(days), staff ? "staff" : "family", role, str(b.pay_notes, 300), key, tid, tid, all.span).first<any>();
+    const r = await env.DB.prepare(`INSERT INTO families (tournament_id, name, days, kind, role, pay_notes, client_key) SELECT ?, ?, '[]', ?, ?, ?, ? WHERE ${OPEN} ON CONFLICT DO NOTHING RETURNING id`)
+      .bind(tid, str(b.name), staff ? "staff" : "family", role, str(b.pay_notes, 300), key, tid).first<any>();
     if (!r && key) {
       const again = await env.DB.prepare("SELECT id FROM families WHERE client_key = ? AND tournament_id = ?").bind(key, tid).first<any>();
       if (again) return json({ id: again.id, already: true }, 200);
@@ -585,28 +594,6 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         await env.DB.prepare(`UPDATE families SET name = ? WHERE id = ? AND uid = ? AND ${OPEN}`).bind(str(b.name), fid, f.uid, tid).run();
         await log(env, tid, name, `renamed the ${f.name} family to ${str(b.name)}`);
       }
-      if (b.days != null || b.day != null) {
-        await openTournament(env, tid);
-        let done = false;
-        for (let attempt = 0; attempt < 3 && !done; attempt++) {
-          const all = await allowedDays(env, tid);
-          const cur = await env.DB.prepare("SELECT days FROM families WHERE id = ?").bind(fid).first<any>();
-          const was: string[] = JSON.parse(cur.days);
-          const days = b.day != null
-            ? cleanDays(b.on ? [...was, b.day] : was.filter(d => d !== b.day), all)
-            : cleanDays(b.days, all);
-          // People who follow the family get its days. Their rest days aren't touched, so a
-          // day taken off and put back comes back fenced or rested, as it was.
-          const res = await env.DB.batch([
-            env.DB.prepare(`UPDATE families SET days = ? WHERE id = ? AND uid = ? AND days = ? AND ${OPEN} AND ${SAME_SPAN}`).bind(JSON.stringify(days), fid, f.uid, cur.days, tid, tid, all.span),
-            env.DB.prepare(`UPDATE people SET days = ?1
-              WHERE family_id = ?2 AND own_days = 0 AND (SELECT days FROM families WHERE id = ?2) = ?1 AND ${OPEN3}`).bind(JSON.stringify(days), fid, tid),
-          ]);
-          done = !!res[0].meta.changes;
-        }
-        if (!done) throw new HttpError(409, "Someone else is changing this family's days. Try again.");
-        await log(env, tid, name, `set the ${f.name} family's days`);
-      }
       return json({ ok: true });
     }
     await openTournament(env, tid);
@@ -637,17 +624,13 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (b.uid !== fam.uid) throw stale();
     if (!str(b.name)) throw new HttpError(400, "Give the person a name");
     const all = await allowedDays(env, tid);
-    const own = !!b.own_days;
     const fencer = !!b.is_fencer;
-    // Someone who follows the family gets its days as they are when the row is written.
-    // A new fencer starts fencing every day they're there; it's one tap to take days off.
-    const r = await env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, rest_days, own_days, client_key)
-      SELECT ?1, ?2, ?3, d.days, CASE WHEN ?3 = 0 OR ?4 IS NULL THEN '[]'
-        ELSE (SELECT json_group_array(value) FROM (SELECT value FROM json_each(d.days) WHERE value NOT IN (SELECT value FROM json_each(?4)) ORDER BY value)) END, ?5, ?9
-      FROM (SELECT CASE WHEN ?5 = 1 THEN ?6 ELSE (SELECT days FROM families WHERE id = ?1) END AS days) d
-      WHERE EXISTS (SELECT 1 FROM tournaments WHERE id = ?7 AND status = 'open' AND deleted_at IS NULL AND start_date || '/' || end_date = ?8) ON CONFLICT DO NOTHING RETURNING id`)
-      .bind(fid, str(b.name), fencer ? 1 : 0, b.fencing_days == null ? null : JSON.stringify(cleanDays(b.fencing_days, all)), own ? 1 : 0,
-        JSON.stringify(own ? cleanDays(b.days, all) : []), tid, all.span, key).first<any>();
+    // A new fencer starts fencing every day of the trip; it's one tap to take a day off.
+    const fdays = !fencer ? [] : b.fencing_days == null ? [...all].sort() : cleanDays(b.fencing_days, all);
+    const r = await env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, fencing_days, client_key)
+      SELECT ?1, ?2, ?3, '[]', ?4, ?5
+      WHERE EXISTS (SELECT 1 FROM tournaments WHERE id = ?6 AND status = 'open' AND deleted_at IS NULL AND start_date || '/' || end_date = ?7) ON CONFLICT DO NOTHING RETURNING id`)
+      .bind(fid, str(b.name), fencer ? 1 : 0, JSON.stringify(fdays), key, tid, all.span).first<any>();
     if (!r && key) {
       const again = await env.DB.prepare("SELECT id FROM people WHERE client_key = ? AND family_id = ?").bind(key, fid).first<any>();
       if (again) return json({ id: again.id, already: true }, 200);
@@ -666,25 +649,29 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if ((method === "PATCH" || method === "DELETE") && b.uid !== p.uid) throw stale();
     if (method === "PATCH") {
       const all = await allowedDays(env, p.tournament_id);
-      const flip = (list: string[], d: string, on: boolean) => on ? [...list, d] : list.filter(x => x !== d);
-      const own = b.own_day != null ? true : b.own_days == null ? !!p.own_days : !!b.own_days;
-      // Back to family days, own days as given or changed one at a time, or as they were.
-      const days: string[] = !own ? JSON.parse(p.family_days)
-        : b.own_day != null ? cleanDays(flip(JSON.parse(p.days), b.own_day, !!b.on), all)
-        : b.days == null ? JSON.parse(p.days) : cleanDays(b.days, all);
-      const fencer = b.is_fencer == null ? !!p.is_fencer : !!b.is_fencer;
-      // Rest days are kept whatever happens to their days, and while they're not a fencer,
-      // so a day put back, or Fencer ticked again, comes back as it was.
-      let rest: string[] = JSON.parse(p.rest_days);
-      if (fencer && b.fencing_day != null) rest = flip(rest, b.fencing_day, !b.on);
-      else if (fencer && b.fencing_days != null) { const f = cleanDays(b.fencing_days, all); rest = [...rest.filter(d => !days.includes(d)), ...days.filter(d => !f.includes(d))]; }
-      rest = [...new Set(rest)].sort();
-      // Someone following the family takes its days as read, so those must still be its days.
-      const famSame = "(SELECT days FROM families WHERE id = ?) = ?";
-      const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?, days = ?, rest_days = ?, own_days = ? WHERE id = ? AND uid = ? AND days = ? AND rest_days = ? AND ${OPEN} AND ${SAME_SPAN}${own ? "" : ` AND ${famSame}`}`).bind(
-        str(b.name) || p.name, fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(rest), own ? 1 : 0, pid, p.uid, p.days, p.rest_days, p.tournament_id, p.tournament_id, all.span,
-        ...(own ? [] : [p.family_id, p.family_days])).run();
-      if (!u.meta.changes) throw new HttpError(409, "That changed on another phone a moment ago. Reload and try again.");
+      const guard = `id = ? AND uid = ? AND ${OPEN} AND ${SAME_SPAN}`, gb = [pid, p.uid, p.tournament_id, p.tournament_id, all.span];
+      if (b.fencing_day != null) {
+        // One day at a time, applied to the list as it stands, so two phones ticking at
+        // once each keep their tick. Only a fencer has fencing days to tick.
+        if (!all.has(b.fencing_day)) throw new HttpError(400, "That day isn't on the trip");
+        const u = await env.DB.prepare(`UPDATE people SET fencing_days = CASE WHEN ?2 = 1
+            THEN (SELECT json_group_array(value) FROM (SELECT value FROM json_each(people.fencing_days) WHERE value != ?1 UNION SELECT ?1 ORDER BY 1))
+            ELSE (SELECT json_group_array(value) FROM (SELECT value FROM json_each(people.fencing_days) WHERE value != ?1 ORDER BY 1)) END
+          WHERE is_fencer = 1 AND id = ?3 AND uid = ?4
+            AND EXISTS (SELECT 1 FROM tournaments WHERE id = ?5 AND status = 'open' AND deleted_at IS NULL AND start_date || '/' || end_date = ?6)`)
+          .bind(b.fencing_day, b.on ? 1 : 0, pid, p.uid, p.tournament_id, all.span).run();
+        if (!u.meta.changes) throw new HttpError(409, "That changed on another phone a moment ago. Reload and try again.");
+      } else {
+        // Name and Fencer. Unticking Fencer keeps the days, so ticking it again brings them
+        // back; someone ticked as a fencer with none starts on every day of the trip.
+        const fencer = b.is_fencer == null ? !!p.is_fencer : !!b.is_fencer;
+        const fdays = b.fencing_days != null ? JSON.stringify(cleanDays(b.fencing_days, all)) : null;
+        const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?,
+            fencing_days = COALESCE(?, CASE WHEN ? = 1 AND is_fencer = 0 AND fencing_days = '[]' THEN ? ELSE fencing_days END)
+          WHERE ${guard}`)
+          .bind(str(b.name) || p.name, fencer ? 1 : 0, fdays, fencer ? 1 : 0, JSON.stringify([...all].sort()), ...gb).run();
+        if (!u.meta.changes) throw new HttpError(409, "That changed on another phone a moment ago. Reload and try again.");
+      }
       await log(env, p.tournament_id, name, `updated ${str(b.name) || p.name}`);
       return json({ ok: true });
     }

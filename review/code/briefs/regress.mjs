@@ -16,7 +16,7 @@ const bad = (await call(`/tournaments/${t}/expenses`, "POST", { description: "x"
 let trip = (await call(`/tournaments/${t}`)).d;
 ok(trip.expenses.find(e => e.id === bad).receipt_key === null, "a crafted receipt reference is refused (stored as none)");
 // prototype names
-ok((await call(`/tournaments/${t}/expenses`, "POST", { description: "x", category: "meal", basis: "toString", amount_cents: 100, paid_by: A, split: {} })).s === 400, "basis 'toString' is rejected");
+ok((await fetch(B + `/tournaments/${t}/expenses`, { method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ description: "x", category: "other", basis: "toString", amount_cents: 100, paid_by: A, split: {} }) })).status === 400, "basis 'toString' is rejected");
 ok((await call(`/tournaments/${t}/expenses`, "POST", { description: "x", category: "constructor", basis: "person", amount_cents: 100, paid_by: A, split: {} })).s === 400, "category 'constructor' is rejected");
 // huge shares
 ok((await call(`/tournaments/${t}/expenses`, "POST", { description: "x", category: "other", basis: "custom", amount_cents: 100, paid_by: A, split: { [A]: 1e308, [Bf]: 1e308 } })).s === 400, "share counts over 1000 are rejected");
@@ -29,12 +29,12 @@ ok((await fetch(B + "/receipts/" + up.key, { headers: { cookie } })).status === 
 const stream = new ReadableStream({ start(c) { c.enqueue(png); c.close(); } });
 const noLen = await fetch(B + `/tournaments/${t}/receipts`, { method: "POST", headers: { cookie, "content-type": "image/png" }, body: stream, duplex: "half" });
 ok(noLen.status === 411, `upload without a size is refused (${noLen.status})`);
-// late family counts automatically, with no write to old expenses
+// (since the opt-in split) a family added later is not in a meal it didn't take part in
 const meal = (await call(`/tournaments/${t}/expenses`, "POST", { description: "Lunch", category: "meal", basis: "person", amount_cents: 3000, paid_by: A, date: D[1], split: { [A]: null, [Bf]: null } })).d.id;
 const C = (await call(`/tournaments/${t}/families`, "POST", { name: "C" })).d.id; await call(`/families/${C}/people`, "POST", { name: "c", is_fencer: false });
 trip = (await call(`/tournaments/${t}`)).d;
 const s = balances(trip.expenses, trip.families).perExpense[meal];
-ok(!(String(C) in trip.expenses.find(e => e.id === meal).split) && s.units[C] === 1, "a family added later shares the lunch without the expense being rewritten");
+ok(!(String(C) in trip.expenses.find(e => e.id === meal).split) && !s.units[C], "a family added later doesn't share a meal it didn't take part in");
 // shortening the trip prunes days
 await call(`/tournaments/${t}`, "PATCH", { end_date: D[1] });
 trip = (await call(`/tournaments/${t}`)).d;

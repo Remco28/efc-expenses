@@ -30,6 +30,3 @@ ok((await get(t2)).families.flatMap(f => f.people).find(p => p.id === sam).is_fe
 const gUid = (await get(t2)).families.find(f => f.id === G).uid;
 ok((await call(`/families/${G}`, "PATCH", { pay_notes: "Venmo @gray" })).s === 200, "the right screen still saves");
 ok((await call(`/families/${G}`, "PATCH", { pay_notes: "Old account", uid: "0000000000000000" })).s === 409 && (await get(t2)).families.find(f => f.id === G).pay_notes === "Venmo @gray", "a screen naming another family's tag is refused");
-// EFC-02: back on the family's days still works normally
-const own = (await call(`/families/${G}/people`, "POST", { name: "Own", is_fencer: true, own_days: true, days: ["2027-10-09"] })).d.id;
-ok((await call(`/people/${own}`, "PATCH", { own_days: false })).s === 200 && (await get(t2)).families.find(f => f.id === G).people.find(p => p.id === own).days.length === 2, "switching back to the family's days takes them");

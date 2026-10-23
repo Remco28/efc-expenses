@@ -15,13 +15,11 @@ await call(`/families/${A}/people`, "POST", { name: "a", is_fencer: true }); awa
 await call(`/tournaments/${t}/expenses`, "POST", { description: "Dinner", category: "meal", basis: "person", amount_cents: 6000, paid_by: Bf, date: D[0], split: {} });
 ok((await call(`/tournaments/${t}/treasurer`, "PUT", { treasurer_name: "Mike", treasurer_family_id: coach })).s === 400, "a coach can't be the treasurer's family");
 // one change at a time; a stale whole-list save can't undo another phone's change
-await call(`/families/${A}`, "PATCH", { day: D[2], on: false });
 let trip = (await call(`/tournaments/${t}`)).d;
-ok(trip.families.find(f => f.id === A).days.join() === [D[0], D[1]].join(), "a single day tap removes just that day");
 const pa = trip.families.find(f => f.id === A).people[0];
 await call(`/people/${pa.id}`, "PATCH", { fencing_day: D[0], on: false });
 trip = (await call(`/tournaments/${t}`)).d;
-ok(trip.families.find(f => f.id === A).people[0].fencing_days.join() === D[1], "a single fencing-day tap removes just that day");
+ok(trip.families.find(f => f.id === A).people[0].fencing_days.join() === [D[1], D[2]].join(), "a single fencing-day tap removes just that day");
 // payments only on a final trip
 await call(`/tournaments/${t}/treasurer`, "PUT", { treasurer_name: "T", treasurer_family_id: A });
 // two finalizes at once: one wins, the other is told; payments intact
