@@ -227,7 +227,8 @@ const tabNow = () => new URLSearchParams(location.hash.split("?")[1] || "").get(
 async function refresh(tab = tabNow()) {
   // Only while they're still on this trip's main screen: an action that finishes
   // after they've moved on must not paint the old trip over the new screen.
-  const id = S.trip.tournament.id, here = () => location.hash.split("?")[0] === `#/t/${id}`;
+  const id = S.trip.tournament.id, h0 = location.hash, seq = routeSeq;
+  const here = () => location.hash === h0 && routeSeq === seq && h0.split("?")[0] === `#/t/${id}`;
   if (!here()) return;
   const f = focusKey();
   const trip = await api(`/tournaments/${id}`);
@@ -716,15 +717,22 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
     if (!here()) return;
     // Text not yet saved (a field still being typed in, the new person's name)
     // survives the redraw. Read just before it, so nothing typed meanwhile is lost.
-    const f = focusAfter || focusKey();
     const keepIds = ["newname", "fam-name", "fam-pay", "st-name", "st-role"];
-    const typed = Object.fromEntries(keepIds.map(id => [id, document.getElementById(id)]).filter(([, el]) => el && el.value !== el.defaultValue).map(([id, el]) => [id, el.value]));
-    const fencerTicked = document.getElementById("newfencer")?.checked;
     const act0 = document.activeElement;
-    const typedName = act0?.dataset?.pname && act0.value !== act0.defaultValue ? [act0.dataset.pname, act0.value] : null;
-    renderFamily(fid, f);
-    for (const [id, v] of Object.entries(typed)) { const el = document.getElementById(id); if (el) el.value = v; }
-    if (typedName) { const el = document.querySelector(`[data-pname="${typedName[0]}"]`); if (el) el.value = typedName[1]; }
+    const typing = act0 && (keepIds.includes(act0.id) || act0.dataset?.pname);
+    // The field they're typing in keeps its text (even if they typed it back to what it was);
+    // others keep text that differs from what was saved.
+    const typed = Object.fromEntries(keepIds.map(id => [id, document.getElementById(id)]).filter(([, el]) => el && (el === act0 || el.value !== el.defaultValue)).map(([id, el]) => [id, el.value]));
+    const fencerTicked = document.getElementById("newfencer")?.checked;
+    const typedName = act0?.dataset?.pname ? [act0.dataset.pname, act0.value] : null;
+    renderFamily(fid, typing ? focusKey() : focusAfter || focusKey());
+    for (const [id, v] of Object.entries(typed)) {
+      const el = document.getElementById(id); if (!el || el.value === v) continue;
+      el.value = v;
+      // A restored edit in a field they've already left would never fire its save: save it now.
+      if (id !== "newname" && el !== document.activeElement) el.dispatchEvent(new Event("change"));
+    }
+    if (typedName) { const el = document.querySelector(`[data-pname="${typedName[0]}"]`); if (el && el.value !== typedName[1]) el.value = typedName[1]; }
     if (fencerTicked != null && document.getElementById("newfencer")) document.getElementById("newfencer").checked = fencerTicked;
     // A failed save already said why in a toast; the redraw shows what really stuck.
     if (st()) { st().textContent = failed ? "" : `✓ ${msg}`; setTimeout(() => { if (st()) st().textContent = ""; }, 2500); }
@@ -818,7 +826,7 @@ function renderEditor(id) {
     const me = myFamily();
     // Families added since this expense was entered count automatically too.
     const split = e ? { ...Object.fromEntries(families.filter(f => f.kind !== "staff").map(f => [f.id, e.basis === "custom" ? 0 : null])), ...e.split } : {};
-    S.draft = e ? { ...e, split, amount: (e.amount_cents / 100).toFixed(2), basisTouched: e.basis !== CATEGORIES[e.category]?.basis || Object.values(e.split).some(v => v != null), splitTouched: true, catTouched: true, dateTouched: true }
+    S.draft = e ? { ...e, split, amount: (e.amount_cents / 100).toFixed(2), basisTouched: e.basis !== CATEGORIES[e.category]?.basis, splitTouched: true, catTouched: true, dateTouched: true }
       : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "person", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, basisTouched: false };
     if (!e) S.draft.split = defaultSplit("person", families);
   }
@@ -857,7 +865,7 @@ function renderEditor(id) {
   // Changing the day keeps the sharing as set: automatic families follow the
   // day by themselves, and unticked families or hand-set counts stay.
   $("day").onchange = () => { d.date = $("day").value || null; d.dateTouched = true; drawSplit(); };
-  $("cat").onchange = () => { d.category = $("cat").value; d.catTouched = true; if (!d.basisTouched && d.basis !== CATEGORIES[d.category].basis) { d.basis = CATEGORIES[d.category].basis; resetSplit(); } };
+  $("cat").onchange = () => { d.category = $("cat").value; d.catTouched = true; followCategory(d); drawSplit(); };
   $("paid").onclick = ev => { const b = ev.target.closest("[data-fam]"); if (!b) return; d.paid_by = Number(b.dataset.fam); markPaid(); drawSplit(); };
   $("basis").onclick = ev => { const b = ev.target.closest("[data-basis]"); if (!b || b.dataset.basis === d.basis) return; d.basis = b.dataset.basis; d.basisTouched = true; d.splitTouched = true; resetSplit(); };
   $("ex").onsubmit = async ev => { ev.preventDefault(); pull(); await saveExpense(); };
@@ -884,6 +892,16 @@ function renderExpenseView(e) {
 
 function markPaid() {
   document.querySelectorAll("#paid [data-fam]").forEach(b => { const on = Number(b.dataset.fam) === Number(S.draft.paid_by); b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
+}
+// A category suggests its usual split method. It's taken up unless someone picked a
+// method, or typed counts that only mean something in the current one; a family
+// left out stays left out either way.
+function followCategory(d) {
+  const usual = CATEGORIES[d.category].basis;
+  if (d.basisTouched || d.basis === usual || Object.values(d.split).some(v => v != null && v > 0)) return;
+  const out = Object.fromEntries(Object.entries(d.split).filter(([, v]) => v === 0));
+  d.basis = usual;
+  d.split = { ...defaultSplit(usual, S.trip.families), ...out };
 }
 function resetSplit() { S.draft.split = defaultSplit(S.draft.basis, S.trip.families); drawSplit(); }
 function cents(v) { const n = Math.round(parseFloat(String(v).replace(/[$,\s]/g, "")) * 100); return Number.isFinite(n) ? n : 0; }
@@ -924,7 +942,7 @@ function drawSplit() {
     : `<b>Enter the amount</b>then pick who paid`;
   el.onchange = ev => {
     const c = ev.target.closest("[data-inc]");
-    if (c) d.splitTouched = d.basisTouched = true;
+    if (c) d.splitTouched = true;
     if (!c) return;
     const f = families.find(x => x.id === Number(c.dataset.inc));
     // Ticking a family nobody marked as there would count 0 and look broken, so
@@ -935,7 +953,7 @@ function drawSplit() {
   };
   el.oninput = ev => {
     const u = ev.target.closest("[data-units]"); if (!u) return;
-    d.splitTouched = d.basisTouched = true;
+    d.splitTouched = true;
     d.split[u.dataset.units] = u.value === "" ? null : Math.max(0, Number(u.value));
     let pos = null; try { pos = u.selectionStart; } catch {}
     drawSplit();
@@ -1008,7 +1026,7 @@ function fillFromReceipt(f, d = S.draft) {
   if (f.description && !d.description) { d.description = f.description; $("desc").value = d.description; }
   if (f.vendor && !d.vendor) { d.vendor = f.vendor; $("vend").value = d.vendor; }
   // Only fill what they haven't chosen themselves.
-  if (f.category && Object.hasOwn(CATEGORIES, f.category) && !d.catTouched) { d.category = f.category; $("cat").value = f.category; if (!d.basisTouched) d.basis = CATEGORIES[f.category].basis; }
+  if (f.category && Object.hasOwn(CATEGORIES, f.category) && !d.catTouched) { d.category = f.category; $("cat").value = f.category; followCategory(d); }
   if (f.date && days.includes(f.date) && !d.dateTouched) { d.date = f.date; $("day").value = f.date; }
   // Keep any sharing changes they made while the receipt was being read.
   if (!d.splitTouched) d.split = defaultSplit(d.basis, S.trip.families);

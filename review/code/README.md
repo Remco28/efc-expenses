@@ -87,3 +87,23 @@ From the user's own testing, same release: the club logo was off-centre in its b
 Checks: 17 unit tests, every API script in briefs/ (round4.mjs is new) and browser checks for 1, 5 and the layout.
 
 Round 4 found 2 HIGH issues, both in code older than round 3, so a round 5 follows.
+
+## Round 5, 2026-10-23
+
+Focuses rotated again; agy and Grok got narrow briefs after timing out in round 4, and both delivered. opencode ran out its 25 minutes without a report. Reports are in round5/.
+
+| # | Finding | Reviewers (their rating) | Ours |
+|---|---|---|---|
+| 1 | After any split edit, a category change kept the old split method, and the "Usual for this category" tag still marked it (a round-4 regression) | Grok MEDIUM | HIGH (rounded up: the stale tag makes the wrong method look right) |
+| 2 | A refresh that finished after a tab change painted the old tab, losing typed input (a round-4 regression) | Grok MEDIUM, Codex MEDIUM | MEDIUM |
+| 3 | Removing a person while typing payment details moved focus away, so the shown edit was never saved | Codex MEDIUM | MEDIUM |
+| 4 | Typing a field back to its old value during a reload was overwritten | Codex MEDIUM | LOW (the field visibly shows the other value) |
+| 5 | Expense created_at checked before the write, not in it | Codex MEDIUM | LOW (a delete and a re-add would have to land inside one request) |
+
+agy checked the money math (shares always add up, balances net to zero, the Settle, Treasurer and You views agree) and found nothing.
+
+Fixes: a category change takes up its usual method unless a method was picked or counts were typed, keeps families left out, and always redraws the tag. refresh() skips if the hash or route changed at all. The family screen keeps focus in the field being typed in and saves restored edits in fields already left. The expense write checks created_at.
+
+Checks: 17 unit tests, every API script in briefs/, and browser checks for 1 and 3 with saves slowed down.
+
+Round 5 found 1 HIGH by our rating, so a round 6 follows, aimed at the round-5 changes.

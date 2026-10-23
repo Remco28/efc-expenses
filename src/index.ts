@@ -652,15 +652,15 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const e = await expenseInput(env, old.tournament_id, b);
       const u = await env.DB.prepare(
         `UPDATE expenses SET description = ?, vendor = ?, date = ?, category = ?, basis = ?, amount_cents = ?, paid_by = ?, split = ?,
-         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ? WHERE id = ? AND ${OPEN}`)
-        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id, old.tournament_id).run();
+         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ? WHERE id = ? AND created_at = ? AND ${OPEN}`)
+        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id, old.created_at, old.tournament_id).run();
       if (!u.meta.changes) throw closed();
       if (old.receipt_key !== e.receipt_key) await dropReceipt(env, old.receipt_key);
       await log(env, old.tournament_id, name, `edited ${e.description}`);
       return json({ ok: true });
     }
     if (method === "DELETE") {
-      const d = await env.DB.prepare(`DELETE FROM expenses WHERE id = ? AND ${OPEN}`).bind(id, old.tournament_id).run();
+      const d = await env.DB.prepare(`DELETE FROM expenses WHERE id = ? AND created_at = ? AND ${OPEN}`).bind(id, old.created_at, old.tournament_id).run();
       if (!d.meta.changes) throw closed();
       await dropReceipt(env, old.receipt_key);
       await log(env, old.tournament_id, name, `deleted ${old.description}, $${(old.amount_cents / 100).toFixed(2)}`);
