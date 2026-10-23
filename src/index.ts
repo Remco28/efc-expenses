@@ -632,6 +632,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const tid = Number(m[1]);
     await openTournament(env, tid);
     const e = await expenseInput(env, tid, await body(req));
+    if (e.receipt_key && !(await env.RECEIPTS.head(e.receipt_key))) throw new HttpError(409, "That receipt upload has expired. Add the photo again.");
     const r = await env.DB.prepare(
       `INSERT INTO expenses (tournament_id, description, vendor, date, category, basis, amount_cents, paid_by, split, receipt_key, receipt_type, created_at, created_by)
        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${OPEN} RETURNING id`)
@@ -656,9 +657,9 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         throw new HttpError(409, "That receipt was replaced on another phone. Reload the expense and try again.");
       const u = await env.DB.prepare(
         `UPDATE expenses SET description = ?, vendor = ?, date = ?, category = ?, basis = ?, amount_cents = ?, paid_by = ?, split = ?,
-         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ? WHERE id = ? AND created_at = ? AND ${OPEN}`)
-        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id, old.created_at, old.tournament_id).run();
-      if (!u.meta.changes) throw closed();
+         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ? WHERE id = ? AND created_at = ? AND receipt_key IS ? AND ${OPEN}`)
+        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id, old.created_at, old.receipt_key, old.tournament_id).run();
+      if (!u.meta.changes) throw new HttpError(409, "This expense or the trip just changed on another phone. Reload and try again.");
       if (old.receipt_key !== e.receipt_key) await dropReceipt(env, old.receipt_key);
       await log(env, old.tournament_id, name, `edited ${e.description}`);
       return json({ ok: true });

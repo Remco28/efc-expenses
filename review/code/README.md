@@ -129,3 +129,25 @@ Fixes: the family screen now restores only the field being typed in and an unsen
 Checks: 17 unit tests, every API script in briefs/, and browser checks for 1, 2 and the earlier family-screen cases (Fencer tick, typed name, field in progress) with saves slowed down.
 
 Round 6 found 1 HIGH, again in a fix from the round before. A round 7 follows, aimed at the round-6 changes.
+
+## Round 7, 2026-10-23
+
+Aimed at the round-6 changes, same briefs as round 6. All four delivered. Reports are in round7/.
+
+| # | Finding | Reviewers (their rating) | Ours |
+|---|---|---|---|
+| 1 | Typing a new person's name during a save: the cursor moved to another person's name field, so the next letters renamed that person (a round-6 regression) | Grok MEDIUM | MEDIUM |
+| 2 | Editing an expense while its save was still sending: the edit was thrown away when the save landed | Codex MEDIUM | MEDIUM |
+| 3 | An older failed save re-enabled Save on the next expense's form, allowing a duplicate | Codex MEDIUM | MEDIUM |
+| 4 | An older refresh could paint over a newer reload of the same trip | Grok MEDIUM | LOW (older figures until the next load; nothing saved is affected) |
+| 5 | A failed Add put its name back over the next name being typed | Codex MEDIUM | LOW (the name is visible in the box before Add) |
+| 6 | Two saves of one expense overlapping inside a single request could point it back at a deleted receipt | opencode MEDIUM | LOW |
+| 7 | A new expense didn't check its receipt upload still existed | opencode LOW | LOW |
+
+agy walked the expense editor through every case again and found nothing.
+
+Fixes: the new-person box keeps the cursor during a redraw; the expense form is frozen (inert) while it saves, and only the draft that saved is touched afterwards; refresh() yields to a newer route load (the round-6 LOW about a failed comeback reload is accepted); a failed Add only refills an empty box; the expense write checks the receipt it read; a new expense checks its upload exists.
+
+Checks: 17 unit tests, every API script in briefs/, and browser checks for 1 and 2 with saves slowed down.
+
+**Round 7 found no HIGH, so the reviews stop here.** The round-7 fixes themselves have not been reviewed by an outside reviewer.

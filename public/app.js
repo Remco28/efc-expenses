@@ -192,6 +192,7 @@ async function show() {
   const [path, query] = h.split("?");
   // A new screen starts at the top; a tab change or a refresh keeps the place.
   if (path !== lastPath) { lastPath = path; window.scrollTo(0, 0); }
+  app.inert = false;                      // a save they walked away from doesn't freeze the next screen
   const parts = path.split("/").filter(Boolean);
   const q = new URLSearchParams(query || "");
   if (!S.name) return renderName();
@@ -227,8 +228,9 @@ const tabNow = () => new URLSearchParams(location.hash.split("?")[1] || "").get(
 async function refresh(tab = tabNow()) {
   // Only while they're still on this trip's main screen: an action that finishes
   // after they've moved on must not paint the old trip over the new screen.
-  const id = S.trip.tournament.id, h0 = location.hash;
-  const here = () => location.hash === h0 && h0.split("?")[0] === `#/t/${id}`;
+  // A newer load (the route reloading on return to the app) wins over this older one.
+  const id = S.trip.tournament.id, h0 = location.hash, seq = routeSeq;
+  const here = () => location.hash === h0 && routeSeq === seq && h0.split("?")[0] === `#/t/${id}`;
   if (!here()) return;
   const f = focusKey();
   const trip = await api(`/tournaments/${id}`);
@@ -723,8 +725,8 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
     // ever re-sent from here.
     const keepIds = ["fam-name", "fam-pay", "st-name", "st-role"];
     const act0 = document.activeElement;
-    const typing = act0 && (keepIds.includes(act0.id) || act0.dataset?.pname);
-    const typed = typing ? [act0.id ? `#${act0.id}` : `[data-pname="${act0.dataset.pname}"]`, act0.value] : null;
+    const typing = act0 && (keepIds.includes(act0.id) || act0.dataset?.pname || act0.id === "newname");
+    const typed = typing && act0.id !== "newname" ? [act0.id ? `#${act0.id}` : `[data-pname="${act0.dataset.pname}"]`, act0.value] : null;
     const newName = document.getElementById("newname")?.value;
     const fencerTicked = document.getElementById("newfencer")?.checked;
     renderFamily(fid, typing ? focusKey() : focusAfter || focusKey());
@@ -776,7 +778,7 @@ function wireFamily(f) {
     let failed = false;
     await famSave(fid, () => api(`/families/${fid}/people`, { method: "POST", body: { name: n, is_fencer: fencer } }).catch(e => { failed = true; throw e; }), `${n} added`);
     // Not added: put back what they typed so they can try again.
-    if (failed && onFamily(S.trip.tournament.id, fid) && document.getElementById("newname")) { document.getElementById("newname").value = n; document.getElementById("newfencer").checked = fencer; }
+    if (failed && onFamily(S.trip.tournament.id, fid) && document.getElementById("newname") && !document.getElementById("newname").value) { document.getElementById("newname").value = n; document.getElementById("newfencer").checked = fencer; }
     document.getElementById("newname")?.focus();
   };
 }
@@ -1045,9 +1047,12 @@ async function saveExpense() {
   if (!s.total) return toast("Include at least one family");
   const body = { description: d.description, vendor: d.vendor, date: d.date, category: d.category, basis: d.basis,
     amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at };
+  // The form is frozen while it sends: a change made meanwhile would be thrown away
+  // when the save lands. Moving to another screen unfreezes it (see show()).
   document.getElementById("save").disabled = true;
+  app.inert = true;
   try { await act(() => d.id ? api(`/expenses/${d.id}`, { method: "PATCH", body }) : api(`/tournaments/${t.id}/expenses`, { method: "POST", body }), "Expense saved"); }
-  catch { document.getElementById("save").disabled = false; return; }
+  catch { if (S.draft === d) { app.inert = false; document.getElementById("save").disabled = false; } return; }
   if (S.draft !== d) return;            // they've moved on to something else meanwhile
   S.draft = null;
   location.hash = `#/t/${t.id}`;
