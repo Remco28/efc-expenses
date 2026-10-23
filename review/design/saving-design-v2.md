@@ -30,8 +30,7 @@ v1 (saving-design-v1.md) was broken by two fresh critics (saving-design-v1-criti
 
 ## 5. The treasurer
 
-- Finalize keeps its existing check that nothing changed since the treasurer's screen loaded.
-- The finalize screen adds one line: "Ask everyone to open the app first, so anything waiting on their phones gets sent."
+- Finalize keeps its existing check that nothing changed since the treasurer's screen loaded. Nothing new on the finalize screen: Frank judged a reminder a burden for a case that needs the uploader and everyone else not to notice.
 - A waiting expense that arrives after finalizing is refused, and lands loudly in "Couldn't send" on that parent's phone (see 2).
 
 ## 6. Everything else needs a signal
