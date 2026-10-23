@@ -151,3 +151,22 @@ Fixes: the new-person box keeps the cursor during a redraw; the expense form is 
 Checks: 17 unit tests, every API script in briefs/, and browser checks for 1 and 2 with saves slowed down.
 
 **Round 7 found no HIGH, so the reviews stop here.** The round-7 fixes themselves have not been reviewed by an outside reviewer.
+
+## Outside review, 2026-10-23 (generic brief)
+
+After round 7, the user asked Codex, in its own session, for a plain code review: no briefs, no focus. It ran the server against an in-memory database built from every migration, controlled the timing of concurrent requests, and ran the PDF exporter on a generated receipt. All four findings came with a reproduction; one suspicion that didn't reproduce was left out. The report was removed once its findings were fixed.
+
+| ID | Finding | Codex | Ours |
+|---|---|---|---|
+| EFC-01 | An expense editor left open saved over a newer correction (A sets $80, B's older editor saves $60 back). Not a race: just an editor left open | HIGH | HIGH. Rounds 4 to 7 checked which expense an editor had open, never which version |
+| EFC-02 | Switching a person back to the family's days could take an outdated copy of them | MEDIUM | MEDIUM (needs tight timing) |
+| EFC-03 | Reused family and person ids let an old screen change someone else, even on another trip (payment details included) | MEDIUM | MEDIUM. Round 4 rated this LOW; that was inconsistent with rating the same mechanism HIGH for expenses, and it missed that ids are shared across trips |
+| EFC-04 | A PDF receipt with a blank page stopped the whole record from exporting | MEDIUM | MEDIUM. No round after 2 looked at the PDF code |
+
+Fixes, with migration 0008: expenses carry a revision number that the editor sends back, and the write requires it unchanged (a stale editor is told to reopen, and keeps what it typed). Families and people carry a random tag (set by a trigger on insert); every change sends the tag the screen saw, added in one place, the browser's api() helper. A person switching back to the family's days requires the family's days unchanged. A PDF receipt skips blank pages and is test-embedded in a throwaway document first; if it still fails, the record downloads with a note in its place.
+
+Pages loaded before this release get "this screen is out of date, reload" on their next change.
+
+Checks: 17 unit tests; every API script in briefs/, now through stamp.mjs, which fills in tags and revisions the way the app does; revisions.mjs, new (the $80 correction stands against an older editor; a reused person id, reproduced, is refused); browser checks of the family screen, a stale expense editor and a PDF export; the blank-page receipt in pdf-lib directly.
+
+What this review says about the rounds before it is in the review-loop skill's evidence file (agent-office, "Briefs drift toward the answer").

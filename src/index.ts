@@ -132,6 +132,8 @@ async function fingerprint(env: Env, tid: number): Promise<string> {
 // the same statement, so it can't slip in after a finalize.
 const OPEN = "EXISTS (SELECT 1 FROM tournaments WHERE id = ? AND status = 'open' AND deleted_at IS NULL)";
 const OPEN3 = "EXISTS (SELECT 1 FROM tournaments WHERE id = ?3 AND status = 'open' AND deleted_at IS NULL)";
+// A screen opened before someone changed or replaced what it shows.
+const stale = () => new HttpError(409, "This screen is out of date: something changed on another phone. Reload to see the current version.");
 const closed = () => new HttpError(409, "This trip just changed on another phone (finalized, deleted or new dates). Reload to see it.");
 // The trip's dates are still the ones the allowed days were worked out from.
 const SAME_SPAN = "(SELECT start_date || '/' || end_date FROM tournaments WHERE id = ?) = ?";
@@ -515,9 +517,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   if ((m = path.match(/^\/families\/(\d+)$/))) {
     const fid = Number(m[1]);
     const tid = await familyTournament(env, fid);
+    // Ids can be reused after a delete, so a change names the family it saw by its tag.
+    const b = method === "PATCH" || method === "DELETE" ? await body(req).catch(() => ({})) : {};
+    const f = await env.DB.prepare("SELECT * FROM families WHERE id = ?").bind(fid).first<any>();
+    if ((method === "PATCH" || method === "DELETE") && b.uid !== f.uid) throw stale();
     if (method === "PATCH") {
-      const b = await body(req);
-      const f = await env.DB.prepare("SELECT * FROM families WHERE id = ?").bind(fid).first<any>();
       if (b.pay_notes != null && str(b.pay_notes, 300) !== f.pay_notes) {
         // How to pay this family; editable after finalizing, since that's when it's needed.
         await env.DB.prepare("UPDATE families SET pay_notes = ? WHERE id = ?").bind(str(b.pay_notes, 300), fid).run();
@@ -560,7 +564,6 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (method === "DELETE") {
       const paid = await env.DB.prepare("SELECT COUNT(*) AS n FROM expenses WHERE paid_by = ?").bind(fid).first<any>();
       if (paid.n > 0) throw new HttpError(409, "This family paid for an expense. Change who paid first.");
-      const f = await env.DB.prepare("SELECT name FROM families WHERE id = ?").bind(fid).first<any>();
       // Each expense's split loses this family as it stands now, so an edit landing meanwhile is kept.
       const can = `NOT EXISTS (SELECT 1 FROM expenses WHERE paid_by = ?1) AND ${OPEN3}`;
       const res = await env.DB.batch([
@@ -578,6 +581,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const tid = await familyTournament(env, fid);
     await openTournament(env, tid);
     const b = await body(req);
+    const fam = await env.DB.prepare("SELECT uid FROM families WHERE id = ?").bind(fid).first<any>();
+    if (b.uid !== fam.uid) throw stale();
     if (!str(b.name)) throw new HttpError(400, "Give the person a name");
     const all = await allowedDays(env, tid);
     const own = !!b.own_days;
@@ -600,8 +605,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const p = await env.DB.prepare("SELECT p.*, f.tournament_id, f.days AS family_days FROM people p JOIN families f ON f.id = p.family_id WHERE p.id = ?").bind(pid).first<any>();
     if (!p) throw new HttpError(404, "No such person");
     await openTournament(env, p.tournament_id);
+    // Ids can be reused after a delete, so a change names the person it saw by its tag.
+    const b = method === "PATCH" || method === "DELETE" ? await body(req).catch(() => ({})) : {};
+    if ((method === "PATCH" || method === "DELETE") && b.uid !== p.uid) throw stale();
     if (method === "PATCH") {
-      const b = await body(req);
       const all = await allowedDays(env, p.tournament_id);
       const flip = (list: string[], d: string, on: boolean) => on ? [...list, d] : list.filter(x => x !== d);
       const own = b.own_day != null ? true : b.own_days == null ? !!p.own_days : !!b.own_days;
@@ -613,8 +620,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const wasFencing: string[] = JSON.parse(p.fencing_days);
       const fencing = !fencer ? [] : (b.fencing_day != null ? cleanDays(flip(wasFencing, b.fencing_day, !!b.on), all)
         : b.fencing_days == null ? (!p.is_fencer ? days : wasFencing) : cleanDays(b.fencing_days, all)).filter(d => days.includes(d));
-      const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?, days = ?, fencing_days = ?, own_days = ? WHERE id = ? AND days = ? AND fencing_days = ? AND ${OPEN} AND ${SAME_SPAN}`).bind(
-        str(b.name) || p.name, fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(fencing), own ? 1 : 0, pid, p.days, p.fencing_days, p.tournament_id, p.tournament_id, all.span).run();
+      // Someone following the family takes its days as read, so those must still be its days.
+      const famSame = "(SELECT days FROM families WHERE id = ?) = ?";
+      const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?, days = ?, fencing_days = ?, own_days = ? WHERE id = ? AND days = ? AND fencing_days = ? AND ${OPEN} AND ${SAME_SPAN}${own ? "" : ` AND ${famSame}`}`).bind(
+        str(b.name) || p.name, fencer ? 1 : 0, JSON.stringify(days), JSON.stringify(fencing), own ? 1 : 0, pid, p.days, p.fencing_days, p.tournament_id, p.tournament_id, all.span,
+        ...(own ? [] : [p.family_id, p.family_days])).run();
       if (!u.meta.changes) throw new HttpError(409, "That changed on another phone a moment ago. Reload and try again.");
       await log(env, p.tournament_id, name, `updated ${str(b.name) || p.name}`);
       return json({ ok: true });
@@ -649,6 +659,9 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     // Ids can be reused once the newest expense is deleted; the screen names the expense it opened by when it was made.
     const b = method === "GET" ? {} : await body(req).catch(() => ({}));
     if (b.created_at != null && b.created_at !== old.created_at) throw new HttpError(409, "That expense was deleted on another phone. Reload to see the list.");
+    // And the revision it opened: an editor left open can't save over a newer correction.
+    if ((method === "PATCH" || method === "DELETE") && b.rev !== old.rev)
+      throw new HttpError(409, "Someone changed this expense after you opened it. Go back and open it again to see their version.");
     if (method === "PATCH") {
       const e = await expenseInput(env, old.tournament_id, b);
       // A new receipt must really be there: an editor left open from before someone
@@ -657,15 +670,15 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         throw new HttpError(409, "That receipt was replaced on another phone. Reload the expense and try again.");
       const u = await env.DB.prepare(
         `UPDATE expenses SET description = ?, vendor = ?, date = ?, category = ?, basis = ?, amount_cents = ?, paid_by = ?, split = ?,
-         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ? WHERE id = ? AND created_at = ? AND receipt_key IS ? AND ${OPEN}`)
-        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id, old.created_at, old.receipt_key, old.tournament_id).run();
+         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ?, rev = rev + 1 WHERE id = ? AND created_at = ? AND rev = ? AND ${OPEN}`)
+        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id, old.created_at, old.rev, old.tournament_id).run();
       if (!u.meta.changes) throw new HttpError(409, "This expense or the trip just changed on another phone. Reload and try again.");
       if (old.receipt_key !== e.receipt_key) await dropReceipt(env, old.receipt_key);
       await log(env, old.tournament_id, name, `edited ${e.description}`);
       return json({ ok: true });
     }
     if (method === "DELETE") {
-      const d = await env.DB.prepare(`DELETE FROM expenses WHERE id = ? AND created_at = ? AND ${OPEN}`).bind(id, old.created_at, old.tournament_id).run();
+      const d = await env.DB.prepare(`DELETE FROM expenses WHERE id = ? AND created_at = ? AND rev = ? AND ${OPEN}`).bind(id, old.created_at, old.rev, old.tournament_id).run();
       if (!d.meta.changes) throw closed();
       await dropReceipt(env, old.receipt_key);
       await log(env, old.tournament_id, name, `deleted ${old.description}, $${(old.amount_cents / 100).toFixed(2)}`);

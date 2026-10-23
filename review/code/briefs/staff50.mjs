@@ -1,8 +1,9 @@
+import { stamp } from "./stamp.mjs";
 import { balances } from "/home/frank/Dev/efc-expenses/public/split.js";
 const B = "http://127.0.0.1:8817/api"; let cookie = "";
 const r0 = await fetch(B + "/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "fence-local-test" }) });
 cookie = r0.headers.get("set-cookie").split(";")[0];
-const call = async (p, m = "GET", b, who = "Mike (Coach)") => { const r = await fetch(B + p, { method: m, headers: { cookie, "x-user-name": who, "content-type": "application/json" }, body: b && JSON.stringify(b) }); return { s: r.status, d: await r.json() }; };
+const call = async (p, m = "GET", b, who = "Mike (Coach)") => { b = await stamp(B, cookie, p, m, b); const r = await fetch(B + p, { method: m, headers: { cookie, "x-user-name": who, "content-type": "application/json" }, body: b && JSON.stringify(b) }); return { s: r.status, d: await r.json() }; };
 const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); if (!c) process.exitCode = 1; };
 await call("/tournaments/50/reset-sandbox", "POST");
 let t = (await call("/tournaments/50")).d;

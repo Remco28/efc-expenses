@@ -1,8 +1,9 @@
+import { stamp } from "./stamp.mjs";
 import { balances } from "/home/frank/Dev/efc-expenses/public/split.js";
 const B = "http://127.0.0.1:8817/api"; let cookie = "";
 const r0 = await fetch(B + "/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "fence-local-test" }) });
 cookie = r0.headers.get("set-cookie").split(";")[0];
-const call = async (p, m = "GET", b, extra = {}) => { const isBin = b instanceof Uint8Array; const r = await fetch(B + p, { method: m, headers: { cookie, "x-user-name": "T", ...(isBin ? {} : { "content-type": "application/json" }), ...extra }, body: isBin ? b : b && JSON.stringify(b) }); return { s: r.status, d: await r.json().catch(() => null) }; };
+const call = async (p, m = "GET", b, extra = {}) => { b = await stamp(B, cookie, p, m, b); const isBin = b instanceof Uint8Array; const r = await fetch(B + p, { method: m, headers: { cookie, "x-user-name": "T", ...(isBin ? {} : { "content-type": "application/json" }), ...extra }, body: isBin ? b : b && JSON.stringify(b) }); return { s: r.status, d: await r.json().catch(() => null) }; };
 const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); if (!c) process.exitCode = 1; };
 const D = ["2027-05-01", "2027-05-02", "2027-05-03"];
 const t = (await call("/tournaments", "POST", { name: "Regress", start_date: D[0], end_date: D[2] })).d.id;

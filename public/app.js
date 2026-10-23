@@ -59,6 +59,14 @@ async function api(path, opts = {}) {
   const who = me?.kind === "staff" && S.name ? `${S.name} (${me.role || "Coach"})` : S.name;
   const headers = { "x-user-name": encodeURIComponent(who || ""), ...(opts.headers || {}) };
   let body = opts.body;
+  // Family and person ids can be reused after a delete, so every change to one also
+  // names, by its tag, the record this screen is showing.
+  const rec = /^\/(families|people)\/(\d+)(\/people)?$/.exec(path);
+  if (rec && opts.method && opts.method !== "GET" && S.trip && !(body instanceof Blob)) {
+    const id = Number(rec[2]);
+    const r = rec[1] === "families" ? S.trip.families.find(f => f.id === id) : S.trip.families.flatMap(f => f.people).find(p => p.id === id);
+    if (r?.uid) body = { ...(body || {}), uid: r.uid };
+  }
   if (body && !(body instanceof Blob)) { headers["content-type"] = "application/json"; body = JSON.stringify(body); }
   let res;
   try { res = await fetch("/api" + path, { method: opts.method || "GET", headers, body, credentials: "same-origin" }); }
@@ -1046,7 +1054,7 @@ async function saveExpense() {
   const s = shares({ ...d, amount_cents }, S.trip.families);
   if (!s.total) return toast("Include at least one family");
   const body = { description: d.description, vendor: d.vendor, date: d.date, category: d.category, basis: d.basis,
-    amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at };
+    amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at, rev: d.rev };
   // The form is frozen while it sends: a change made meanwhile would be thrown away
   // when the save lands. Moving to another screen unfreezes it (see show()).
   document.getElementById("save").disabled = true;
@@ -1271,7 +1279,7 @@ app.addEventListener("click", async ev => {
         location.hash = `#/t/${id}`; return;
       case "del-expense":
         if (!(await confirmSheet("Delete this expense?", "It's removed for everyone, along with its receipt.", "Delete", true))) return;
-        await act(() => api(`/expenses/${id}`, { method: "DELETE", body: { created_at: S.trip.expenses.find(x => x.id === id)?.created_at } }), "Deleted"); S.draft = null; location.hash = `#/t/${t.id}`; return;
+        await act(() => api(`/expenses/${id}`, { method: "DELETE", body: { created_at: S.trip.expenses.find(x => x.id === id)?.created_at, rev: S.trip.expenses.find(x => x.id === id)?.rev } }), "Deleted"); S.draft = null; location.hash = `#/t/${t.id}`; return;
       case "drop-receipt": S.draft.receipt_key = null; S.draft.receipt_type = null; S.draft.aiNote = ""; return drawReceipt();
       case "volunteer": return volunteerSheet();
       case "reset-sandbox":

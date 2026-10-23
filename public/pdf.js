@@ -284,13 +284,22 @@ export async function exportPdf(trip) {
     try { bytes = await fetch(`/api/receipts/${encodeURI(e.receipt_key)}`, { credentials: "same-origin" }).then(r => { if (!r.ok) throw new Error(); return r.arrayBuffer(); }); }
     catch { text("This receipt couldn't be loaded.", M, top - 16, { color: C.grey }); continue; }
     if (e.receipt_type === "application/pdf") {
-      let src;
-      try { src = await PDFDocument.load(bytes, { ignoreEncryption: true }); }
-      catch { text("This PDF receipt couldn't be included. It's still stored in the app.", M, top - 16, { color: C.grey }); continue; }
-      const pages = src.getPages();
+      // One odd receipt must not stop the whole record downloading. A blank page has
+      // nothing to draw and is skipped; the rest is embedded in a throwaway document
+      // first, because pdf-lib only reports some embedding errors when saving.
+      let pages, embs;
+      try {
+        const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+        pages = src.getPages().filter(p => p.node.Contents());
+        if (!pages.length) throw new Error("no drawable pages");
+        const trial = await PDFDocument.create();
+        await trial.embedPages(pages);
+        await trial.save();
+        embs = await doc.embedPages(pages);
+      } catch { text("This PDF receipt couldn't be included. It's still stored in the app.", M, top - 16, { color: C.grey }); continue; }
       for (let i = 0; i < pages.length; i++) {
         if (i > 0) newPage(`Receipt ${rnum.get(e.id)}, page ${i + 1} of ${pages.length}`);
-        const emb = await doc.embedPage(pages[i]);
+        const emb = embs[i];
         const t0 = i > 0 ? y : top;
         const s = Math.min(CW / emb.width, (t0 - BOTTOM - 8) / emb.height, 1);
         const w = emb.width * s, h = emb.height * s, x = M + (CW - w) / 2;

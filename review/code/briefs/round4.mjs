@@ -1,7 +1,8 @@
+import { stamp } from "./stamp.mjs";
 const B = "http://127.0.0.1:8817/api";
 const r0 = await fetch(B + "/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "fence-local-test" }) });
 const cookie = r0.headers.get("set-cookie").split(";")[0];
-const call = async (p, m = "GET", b) => { const r = await fetch(B + p, { method: m, headers: { cookie, "x-user-name": "T", "content-type": "application/json" }, body: b && JSON.stringify(b) }); return { s: r.status, d: await r.json().catch(() => null) }; };
+const call = async (p, m = "GET", b) => { b = await stamp(B, cookie, p, m, b); const r = await fetch(B + p, { method: m, headers: { cookie, "x-user-name": "T", "content-type": "application/json" }, body: b && JSON.stringify(b) }); return { s: r.status, d: await r.json().catch(() => null) }; };
 const ok = (c, m) => { console.log((c ? "PASS " : "FAIL ") + m); if (!c) process.exitCode = 1; };
 const t = (await call("/tournaments", "POST", { name: "R4", start_date: "2027-09-04", end_date: "2027-09-05" })).d.id;
 const fams = []; for (const n of ["Adams","Baker","Clark","Diaz","Evans","Fox","Gray","Hill","Ito"]) fams.push((await call(`/tournaments/${t}/families`, "POST", { name: n })).d.id);
@@ -16,5 +17,5 @@ ok((await call(`/expenses/${e2}`, "PATCH", { ...ex, description: "Stale save", c
 ok((await call(`/expenses/${e2}`, "DELETE", { created_at: c1 })).s === 409 || e1 !== e2, "a stale editor can't delete the expense that took its id");
 tr = (await call(`/tournaments/${t}`)).d; const c2 = tr.expenses.find(x => x.id === e2).created_at;
 ok((await call(`/expenses/${e2}`, "PATCH", { ...ex, description: "Dinner, fixed", created_at: c2 })).s === 200, "the right editor still saves");
-ok((await call(`/expenses/${e2}`, "PATCH", { ...ex, description: "Old client, no token" })).s === 200, "a save without the token still works (an old page)");
+ok((await fetch(B + `/expenses/${e2}`, { method: "PATCH", headers: { cookie, "x-user-name": "T", "content-type": "application/json" }, body: JSON.stringify({ ...ex, description: "Old page" }) })).status === 409, "a page from before revisions (no revision sent) is told to reload");
 console.log(`  trip ${t}`);
