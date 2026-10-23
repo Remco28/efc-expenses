@@ -173,6 +173,8 @@ What this review says about the rounds before it is in the review-loop skill's e
 
 ## Round 8, 2026-10-23: first run of the updated review-loop
 
+**New baseline.** The method changed here (see the review-loop skill), so rounds 1 to 7 are not comparable with round 8 onward. Round 8 is round 1 of the new method.
+
 The skill was updated after the outside review (short briefs, reviewers may run the code, a whole-code reviewer every round). This round followed it. Outside reviewers launched with approval prompts off were blocked by the harness's safety check, so the user chose Claude agents instead, as the loop was first designed: two whole-code reviewers (Sonnet 5.5, Haiku 5.5), a fix auditor on ddd5fc4 (Sonnet), a money specialist (Haiku), and a disposition auditor on our own past ratings (Sonnet). Each code reviewer had its own runnable copy at ddd5fc4, holding only the test access code. Briefs (about 270 words, no function names) and predictions were committed before the run (692465b, PREDICTIONS-R8.md). Reports are in round8/.
 
 Cast note: the predictions were written for Codex, Grok, agy and opencode; the briefs did not change, the models did. Sonnet and Haiku share a lineage, so their agreement counts for less than agreement across vendors.

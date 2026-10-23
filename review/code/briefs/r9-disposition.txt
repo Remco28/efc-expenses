@@ -1,0 +1,19 @@
+You audit how a code review was judged, not the code itself.
+
+A small web app (fencing-club parents splitting shared travel costs, settling through one treasurer) has been through several rounds of code review. After each round the author rated every finding, sometimes differently from the reviewer, and decided what to fix and what to leave.
+
+Materials:
+- /tmp/claude-1000/-home-frank-Dev-agent-office/5c8f63e1-975c-455f-891c-a49fa0bbcc0b/scratchpad/rl9/whole-sonnet/review/code/README.md. Audit the section "Round 8": its findings, the reviewers' ratings beside the author's, the reasons, what was fixed and what was left, and the author's response to the previous audit. Earlier sections are context.
+- The reviewers' own round-8 reports: /tmp/claude-1000/-home-frank-Dev-agent-office/5c8f63e1-975c-455f-891c-a49fa0bbcc0b/scratchpad/rl9/whole-sonnet/review/code/round8/.
+- The rules the author says they follow: /home/frank/Dev/agent-office/skills/review-loop/profiles/code-review.md (the severity scale) and step 4 of /home/frank/Dev/agent-office/skills/review-loop/SKILL.md (triage).
+- The code, if you need to check a claim: /tmp/claude-1000/-home-frank-Dev-agent-office/5c8f63e1-975c-455f-891c-a49fa0bbcc0b/scratchpad/rl9/whole-sonnet. Read only; change nothing anywhere.
+
+Questions:
+1. Which of the author's round-8 ratings, or decisions not to fix something, do not hold up against the scale and the evidence? For each: the row, why, and what it should have been.
+2. Are the stated reasons real, or convenient?
+3. Did the author's response to the previous audit actually change how round 8 was rated, or only how it was described?
+4. Is the same kind of problem rated differently in different places?
+
+Finding nothing is a real answer, but it is the answer that should make us trust YOU less rather than the author more.
+
+Your final message is your report.
