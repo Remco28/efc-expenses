@@ -421,7 +421,9 @@ function stepsCard() {
   return `<div class="card">
     <ol class="steps" aria-label="Trip progress">${list.map((s, i) => `<li class="${s.done ? "done" : i === now ? "now" : ""}"><div class="b"></div>${s.label}</li>`).join("")}</ol>
     ${cur ? `<div class="next"><div class="txt"><b>Next: ${cur.next}</b>${cur.why}</div>
-      ${cur.tab === "expenses" ? `<a class="btn btn-ghost btn-small" href="#/t/${t.id}/e/new">${cur.go}</a>` : `<a class="btn btn-ghost btn-small" href="#/t/${t.id}?tab=${cur.tab}">${cur.go}</a>`}</div>`
+      ${cur.tab === "expenses" ? `<a class="btn btn-ghost btn-small" href="#/t/${t.id}/e/new">${cur.go}</a>`
+        : cur.label === "Treasurer" ? `<button class="btn btn-ghost btn-small" data-act="volunteer">${cur.go}</button>`
+        : `<button class="btn btn-ghost btn-small" data-act="step" data-tab="${cur.tab}">${cur.go}</button>`}</div>`
       : `<div class="next"><div class="txt"><b>${icon("check")} All settled</b>Every payment is done. Download the PDF for the club's records.</div></div>`}
   </div>`;
 }
@@ -1483,6 +1485,10 @@ app.addEventListener("click", async ev => {
         dropDraft(); S.draft = null; location.hash = `#/t/${t.id}`; return;
       case "drop-receipt": S.draft.receipt_key = null; S.draft.receipt_type = null; S.draft.aiNote = ""; return drawReceipt();
       case "volunteer": return volunteerSheet();
+      // A link to the tab already open goes nowhere, so the next step scrolls to it instead.
+      case "step":
+        if (tabNow() === b.dataset.tab) return document.getElementById("tab")?.scrollIntoView({ behavior: "smooth", block: "start" });
+        location.hash = `#/t/${t.id}?tab=${b.dataset.tab}`; return;
       case "reset-sandbox":
         if (!(await confirmSheet("Reset the practice trip?", "Everything anyone added or changed here is removed, and the trip goes back to how it started. This only affects the practice trip.", "Reset", true))) return;
         await act(() => api(`/tournaments/${t.id}/reset-sandbox`, { method: "POST" }), "Practice trip reset");
