@@ -418,3 +418,36 @@ Also accepted: most rows copied the reviewer's rating; and the table doesn't say
 Ten rounds reviewed code built on a wrong assumption: that families on a trip eat together, so a meal is split among everyone there that day, and so every family needs "days at the trip". Frank, asked in plain words how the club actually pays: team dinners are occasional, often several separate groups, and opt-in; attendance days aren't needed; fencing days are essential. No review round could have found this: every reader checked the code against our idea of the app, not the club's. It took a few minutes of plain questions to the person who knows.
 
 The rules (review/design/billing-model.md) went through two critic pairs (on the rules, then on the build plan) before building. Built: three splits (who took part, with a head count per ticked family; equal per fencer; by fencing days), each kind of expense fixing its split (only Other chooses); no attendance days; a trip-wide Fencing days screen; every new expense, ticked meals included, can wait on the phone (ticked families named by their tags); old test scripts updated through the test helper (stamp.mjs translates old-shape expenses), checks of retired rules (family days, own days, rest days) removed, and checks of the new rules added (round10.mjs). The live trips were test data and are cleared (scripts/clear-trips.sql). Migrations 0012's rest_days and the old days columns are no longer read.
+
+## Round 11 (round 4 of the new method): the rebuilt split
+
+Reviewed 60fcc7d (the rebuild, plus Frank's Volunteer fix found while testing: the next-step button linked to the tab already open, so it did nothing). Cast: two whole-code reviewers (Sonnet, Haiku), a fix auditor on 6cc7e4d..60fcc7d (Sonnet), a bad-signal reviewer (Haiku), and new this round a rules reviewer (Sonnet) holding the app to billing-model.md. Reports in round11/. No reader rated anything HIGH; two ran 20,000 random trips through the money math with no failures.
+
+| # | Finding | Found by (their rating) | Ours | Done |
+|---|---|---|---|---|
+| 1 | A new fencer starts with every day ticked, so a kid who fenced one day is charged the coach's hotel and meals for all of them unless someone fixes it, and the "no fencing days" warning never fires | rules (MEDIUM, ran it); whole-code Sonnet noted it as deliberate | **HIGH**: realistic (parents forget), a wrong share, nobody told. My own default, chosen without asking | Asked Frank: a new fencer starts with no days ticked, and the warning catches a forgotten one. Ticking Fencer again no longer fills every day either |
+| 2 | This phone's "your family" is kept by number only; after a family is deleted and a new one takes its number, the phone shows the new family as yours (and as payer, treasurer) | whole-code Haiku (MEDIUM, ran the reuse) | MEDIUM | Fixed: kept with the family's tag; a different family on the same number makes the phone ask again (browser check) |
+| 3 | A refused expense from before the rebuild, or a draft kept across it, breaks the form when opened | fix auditor (MEDIUM) | MEDIUM | Fixed: old kinds open as Other, old splits as who took part (browser check) |
+| 4 | "Open it to fix" can tick a family that took a removed family's number | fix auditor (LOW) | LOW | Fixed: only families whose tag still matches stay ticked, and the payer likewise |
+| 5 | Toggling Fencer off and on gives a no-days fencer every day | fix auditor, whole-code Sonnet (LOW, ran it) | LOW | Gone with row 1 |
+| 6 | The hint under the expense list still lists transport and supplies; no icon for the coach's own meals | rules, fix auditor (LOW) | LOW | Fixed |
+| 7 | A retried finalize that went through says "finalized" as an error and leaves the Finalize button showing | bad-signal (LOW, ran it) | LOW | Fixed: the screen catches up after a refused finalize |
+| 8 | A retried trip-details save that went through says another phone changed it | bad-signal (LOW, ran it) | LOW | Not fixed: visible, a reload shows the saved dates; the stale-screen guard can't tell its own earlier save from another phone's without more state |
+| 9 | A family removed in the milliseconds while a meal ticking it is saved leaves a dead id in the split | whole-code Sonnet (LOW, reasoned) | LOW | Not fixed: needs two phones within ms on a family that never paid; if it was the only family ticked, finalize blocks it visibly |
+| 10 | Dead code (the unsent-draft row), stale comments (0012, the family POST, README) | fix auditor, whole-code Haiku, rules (LOW) | LOW | Removed and corrected. Removing the dead row left one stray reference that broke the trip page; caught by the browser check before release |
+| 11 | Hand-set shares are held offline, against saving-design v4 | bad-signal (LOW) | not a finding | Superseded by Frank's billing decision (every new expense can wait); the design note stands as history |
+
+### Predictions, against what happened
+
+- **HIGH 1 or 2: right in number (1, by our rating; readers 0), wrong in place.** I guessed a screen left on attendance days or a server/screen mismatch; it was a default I picked myself.
+- **MEDIUM 4 to 8: wrong**, 2 (rows 2, 3).
+- **The rules reviewer finds a disagreement in wording, not money: half right.** It found both: wording (row 6) and money (row 1).
+- **The fix auditor finds something the test-helper translation hid: wrong.** It noted the helper means old scripts only check translated expenses, but found nothing hidden.
+- **Whole-code overlap at most one: right**, one (row 5).
+
+**Believed, and wrong:** that the new-fencer default was a build detail. Two build-plan critics flagged it as a decision; I chose "every day" and wrote it in a comment instead of asking. Frank chose the other way in one line.
+
+### Mistakes the next author will make
+
+1. Deciding a default that moves money without asking the owner, because it looks like a detail.
+2. Removing dead code by hand and leaving one reference behind; only a run of the page finds it.

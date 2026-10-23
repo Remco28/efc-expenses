@@ -50,7 +50,10 @@ ok(r.s === 404 && r.d.route !== "unknown", "a missing trip is a refusal, not an 
   const L = (await call(`/tournaments/${t3}/families`, "POST", { name: "Lee" })).d.id;
   const pick = (await call(`/families/${L}/people`, "POST", { name: "Pick", is_fencer: true })).d.id;
   const fd = async id => (await get(t3)).families[0].people.find(p => p.id === id).fencing_days.join();
-  ok(await fd(pick) === D3.join(), "a new fencer fences every day");
+  ok(await fd(pick) === "", "a new fencer starts with no fencing days");
+  await call(`/people/${pick}`, "PATCH", { is_fencer: false }); await call(`/people/${pick}`, "PATCH", { is_fencer: true });
+  ok(await fd(pick) === "", "unticking and reticking Fencer doesn't fill in every day");
+  await call(`/people/${pick}`, "PATCH", { fencing_days: D3 });
   await Promise.all([call(`/people/${pick}`, "PATCH", { fencing_day: D3[0], on: false }), call(`/people/${pick}`, "PATCH", { fencing_day: D3[2], on: false })]);
   ok(await fd(pick) === D3[1], `two taps at once each keep their change (${await fd(pick)})`);
   await call(`/people/${pick}`, "PATCH", { is_fencer: false });

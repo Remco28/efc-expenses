@@ -16,7 +16,9 @@ const mom = (await call(`/families/${A}/people`, "POST", { name: "mom", is_fence
 const own = (await call(`/families/${A}/people`, "POST", { name: "aunt", is_fencer: true, own_days: true, days: [D[0]] })).d.id;
 await call(`/families/${Bf}/people`, "POST", { name: "b", is_fencer: true }); await call(`/families/${C}/people`, "POST", { name: "c", is_fencer: true });
 let tr = await get(); const P = id => tr.families.flatMap(f => f.people).find(p => p.id === id);
-ok(P(kid).fencing_days.join() === D.join(), "a new fencer fences every day of the trip");
+ok(P(kid).fencing_days.length === 0, "a new fencer starts with no fencing days (they're ticked as fenced)");
+for (const id of [kid, own]) await call(`/people/${id}`, "PATCH", { fencing_days: D });
+tr = await get();
 ok(P(mom).fencing_days.length === 0, "a parent fences no days");
 await call(`/people/${kid}`, "PATCH", { fencing_day: D[0], on: false });
 tr = await get();
@@ -41,7 +43,7 @@ ok((await call(`/payments/${pay.id}`, "PATCH", { paid: true, family_id: pay.fami
 ok((await call(`/payments/${pay.id}`, "PATCH", { paid: true, family_id: pay.family_id, direction: pay.direction, amount_cents: pay.amount_cents })).s === 200, "ticking the payment as seen works");
 // two phones changing the dates at once: one wins, attendance matches the winner
 const t2 = (await call("/tournaments", "POST", { name: "Dates", start_date: D[0], end_date: D[2] })).d.id;
-const F = (await call(`/tournaments/${t2}/families`, "POST", { name: "F" })).d.id; await call(`/families/${F}/people`, "POST", { name: "f", is_fencer: true });
+const F = (await call(`/tournaments/${t2}/families`, "POST", { name: "F" })).d.id; await call(`/families/${F}/people`, "POST", { name: "f", is_fencer: true, fencing_days: D });
 const [x1, x2] = await Promise.all([call(`/tournaments/${t2}`, "PATCH", { start_date: D[1], end_date: D[2] }), call(`/tournaments/${t2}`, "PATCH", { start_date: D[0], end_date: D[1] })]);
 const t2d = (await call(`/tournaments/${t2}`)).d, fp = t2d.families[0].people[0];
 ok([x1.s, x2.s].includes(200) && [x1.s, x2.s].every(s => [200, 409].includes(s)) && fp.fencing_days.length > 0 && fp.fencing_days.every(d => d >= t2d.tournament.start_date && d <= t2d.tournament.end_date), `two date changes at once (${x1.s}, ${x2.s}): fencing days stay inside the final dates (${fp.fencing_days})`);

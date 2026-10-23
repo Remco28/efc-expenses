@@ -21,17 +21,10 @@ const e = (await call(`/tournaments/${t}/expenses`, "POST", ex)).d.id;
 // (since the saving design: a resent key never changes anything, it says "already added" and whether this copy matches)
 const re = await call(`/tournaments/${t}/expenses`, "POST", { ...ex, amount_cents: 6500 });
 ok(re.s === 200 && re.d.id === e && re.d.already && re.d.same === false && (await get(t)).expenses.find(x => x.id === e).amount_cents === 2000, "a resent key with different content is answered already-added, not same, and changes nothing");
-// 2. adding a day to a family: a fencer fencing every day fences the new one; one with picked days doesn't
+// 2. (adding a day to a family: retired with attendance days, see billing-model.md)
 const t2 = (await call("/tournaments", "POST", { name: "R9 days", start_date: D[0], end_date: D[2] })).d.id;
 const F = (await call(`/tournaments/${t2}/families`, "POST", { name: "Fox" })).d.id;
-await call(`/families/${F}`, "PATCH", { day: D[2], on: false });
-const all = (await call(`/families/${F}/people`, "POST", { name: "All", is_fencer: true })).d.id;
-const some = (await call(`/families/${F}/people`, "POST", { name: "Some", is_fencer: true })).d.id;
-await call(`/people/${some}`, "PATCH", { fencing_day: D[1], on: false });
-await call(`/families/${F}`, "PATCH", { day: D[2], on: true });
-const pp = (await get(t2)).families[0].people, P = id => pp.find(p => p.id === id).fencing_days.join();
-// (since round 10's rest days: a day they were never there for is fenced, the rested day stays rested)
-ok(P(all) === D.join() && P(some) === [D[0], D[2]].join(), `adding a day: everyday fencer fences it (${P(all)}); picked-days fencer keeps the rested day rested (${P(some)})`);
+await call(`/families/${F}/people`, "POST", { name: "All", is_fencer: true, fencing_days: D });
 // 3. finalize refuses numbers the screen didn't see
 await call(`/tournaments/${t2}/treasurer`, "PUT", { treasurer_name: "T", treasurer_family_id: F });
 const seen = Math.max(0, ...(await get(t2)).activity.map(a => a.id));

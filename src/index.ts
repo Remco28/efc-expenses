@@ -567,8 +567,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       await log(env, tid, name, `added ${str(b.role, 40) || "Coach"} ${str(b.name)} to coaches & staff`);
       return json({ id: r.id }, 201);
     }
-    // A family that joins late shares existing costs automatically: a family not
-    // listed on an expense counts as "automatic" (see unitsFor in split.js).
+    // A family that joins late shares the coach's costs from now on (they follow the
+    // fencers); it isn't in any meal until someone ticks it (see unitsFor in split.js).
     await log(env, tid, name, `added the ${str(b.name)} family`);
     return json({ id: r.id }, 201);
   }
@@ -625,8 +625,9 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (!str(b.name)) throw new HttpError(400, "Give the person a name");
     const all = await allowedDays(env, tid);
     const fencer = !!b.is_fencer;
-    // A new fencer starts fencing every day of the trip; it's one tap to take a day off.
-    const fdays = !fencer ? [] : b.fencing_days == null ? [...all].sort() : cleanDays(b.fencing_days, all);
+    // A new fencer starts with no fencing days (Frank): the days actually fenced are ticked,
+    // and until they are, the app says so, rather than charging every day unnoticed.
+    const fdays = !fencer || b.fencing_days == null ? [] : cleanDays(b.fencing_days, all);
     const r = await env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, fencing_days, client_key)
       SELECT ?1, ?2, ?3, '[]', ?4, ?5
       WHERE EXISTS (SELECT 1 FROM tournaments WHERE id = ?6 AND status = 'open' AND deleted_at IS NULL AND start_date || '/' || end_date = ?7) ON CONFLICT DO NOTHING RETURNING id`)
@@ -641,7 +642,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   }
   if ((m = path.match(/^\/people\/(\d+)$/))) {
     const pid = Number(m[1]);
-    const p = await env.DB.prepare("SELECT p.*, f.tournament_id, f.days AS family_days FROM people p JOIN families f ON f.id = p.family_id WHERE p.id = ?").bind(pid).first<any>();
+    const p = await env.DB.prepare("SELECT p.*, f.tournament_id FROM people p JOIN families f ON f.id = p.family_id WHERE p.id = ?").bind(pid).first<any>();
     if (!p) throw new HttpError(404, "No such person");
     await openTournament(env, p.tournament_id);
     // Ids can be reused after a delete, so a change names the person it saw by its tag.
@@ -662,14 +663,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
           .bind(b.fencing_day, b.on ? 1 : 0, pid, p.uid, p.tournament_id, all.span).run();
         if (!u.meta.changes) throw new HttpError(409, "That changed on another phone a moment ago. Reload and try again.");
       } else {
-        // Name and Fencer. Unticking Fencer keeps the days, so ticking it again brings them
-        // back; someone ticked as a fencer with none starts on every day of the trip.
+        // Name and Fencer. Unticking Fencer keeps the days, so ticking it again brings them back.
         const fencer = b.is_fencer == null ? !!p.is_fencer : !!b.is_fencer;
         const fdays = b.fencing_days != null ? JSON.stringify(cleanDays(b.fencing_days, all)) : null;
-        const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?,
-            fencing_days = COALESCE(?, CASE WHEN ? = 1 AND is_fencer = 0 AND fencing_days = '[]' THEN ? ELSE fencing_days END)
-          WHERE ${guard}`)
-          .bind(str(b.name) || p.name, fencer ? 1 : 0, fdays, fencer ? 1 : 0, JSON.stringify([...all].sort()), ...gb).run();
+        const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?, fencing_days = COALESCE(?, fencing_days) WHERE ${guard}`)
+          .bind(str(b.name) || p.name, fencer ? 1 : 0, fdays, ...gb).run();
         if (!u.meta.changes) throw new HttpError(409, "That changed on another phone a moment ago. Reload and try again.");
       }
       await log(env, p.tournament_id, name, `updated ${str(b.name) || p.name}`);

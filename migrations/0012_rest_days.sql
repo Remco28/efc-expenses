@@ -1,3 +1,5 @@
+-- Superseded the same day by the opt-in split (review/design/billing-model.md):
+-- fencing_days is read and written again, and rest_days is no longer used.
 -- A person stores the days they're there but not fencing, instead of the days they
 -- fence, so a day taken off and put back comes back as it was. Fencing days are
 -- worked out as days minus rest days. fencing_days is no longer read or written.

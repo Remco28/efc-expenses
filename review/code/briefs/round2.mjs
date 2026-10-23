@@ -17,6 +17,7 @@ ok((await call(`/tournaments/${t}/treasurer`, "PUT", { treasurer_name: "Mike", t
 // one change at a time; a stale whole-list save can't undo another phone's change
 let trip = (await call(`/tournaments/${t}`)).d;
 const pa = trip.families.find(f => f.id === A).people[0];
+await call(`/people/${pa.id}`, "PATCH", { fencing_days: D });          // a new fencer starts with none
 await call(`/people/${pa.id}`, "PATCH", { fencing_day: D[0], on: false });
 trip = (await call(`/tournaments/${t}`)).d;
 ok(trip.families.find(f => f.id === A).people[0].fencing_days.join() === [D[1], D[2]].join(), "a single fencing-day tap removes just that day");
