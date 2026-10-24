@@ -115,3 +115,21 @@ ok(r.s === 404 && r.d.route !== "unknown", "a missing trip is a refusal, not an 
   const tr = await get(t6);
   ok(typeof tr.fingerprint === "string" && tr.fingerprint.length > 0, "the trip comes with the fingerprint of what it shows");
 }
+// outside review 2026-10-24: a name-only change leaves Fencer alone; an add can't land in a replacement family
+{
+  const t7 = (await call("/tournaments", "POST", { name: "Outside", start_date: "2028-10-01", end_date: "2028-10-02" })).d.id;
+  const A = (await call(`/tournaments/${t7}/families`, "POST", { name: "Ames" })).d.id;
+  const kid = (await call(`/families/${A}/people`, "POST", { name: "Alex", is_fencer: true })).d.id;
+  await call(`/people/${kid}`, "PATCH", { is_fencer: false });
+  await call(`/people/${kid}`, "PATCH", { name: "Alexander" });
+  const p = (await get(t7)).families[0].people[0];
+  ok(p.name === "Alexander" && !p.is_fencer, "a name-only change doesn't touch Fencer");
+  const Z = (await call(`/tournaments/${t7}/families`, "POST", { name: "Zed" })).d.id;
+  const oldUid = (await get(t7)).families.find(f => f.id === Z).uid;
+  await call(`/families/${Z}`, "DELETE");
+  const Y = (await call(`/tournaments/${t7}/families`, "POST", { name: "Young" })).d.id;
+  const r = await raw(`/families/${Y}/people`, "POST", { name: "Laura", uid: oldUid });
+  ok(Y !== Z || r.s === 409, `an add carrying a removed family's tag doesn't land in the family that took its number (${Y === Z ? "reused" : "not reused"}, ${r.s})`);
+  const tr = await get(t7);
+  ok(tr.tournament.id === t7 && typeof tr.fingerprint === "string", "the trip row comes with its fingerprint");
+}

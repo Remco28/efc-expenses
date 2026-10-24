@@ -284,7 +284,13 @@ async function show() {
   }
 }
 
-async function loadTrip(id) { S.trip = await api(`/tournaments/${id}`); }
+// A reload that finishes after they've moved on (to another trip, say) mustn't replace the
+// trip the new screen is showing: every action on that screen reads S.trip.
+async function loadTrip(id, stillHere) {
+  const trip = await api(`/tournaments/${id}`);
+  if (!stillHere()) return false;
+  S.trip = trip; return true;
+}
 const tabNow = () => new URLSearchParams(location.hash.split("?")[1] || "").get("tab") || "expenses";
 async function refresh(tab = tabNow()) {
   // Only while they're still on this trip's main screen: an action that finishes
@@ -794,8 +800,7 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
     // still going), don't drag them back: the new screen loads fresh data itself.
     const here = () => onFamily(S.trip.tournament.id, fid);
     if (!here()) return;
-    await loadTrip(S.trip.tournament.id);
-    if (!here()) return;
+    if (!(await loadTrip(S.trip.tournament.id, here))) return;
     // Text not yet saved (a field still being typed in, the new person's name)
     // survives the redraw. Read just before it, so nothing typed meanwhile is lost.
     // Only text not yet sent survives the redraw: the field they're typing in (its
@@ -898,7 +903,7 @@ function fencingSave(call) {
   fenceQueue = fenceQueue.then(() => act(call)).catch(() => {}).then(async () => {
     if (--fencePending) return;
     const here = () => hashPath() === `#/t/${S.trip.tournament.id}/fencing`;
-    try { if (here()) { await loadTrip(S.trip.tournament.id); if (here()) { renderFencing(); if (st()) st().textContent = "✓ Saved"; } } }
+    try { if (here() && await loadTrip(S.trip.tournament.id, here)) { renderFencing(); if (st()) st().textContent = "✓ Saved"; } }
     catch (e) { if (st()) st().textContent = ""; }
   });
   return fenceQueue;
@@ -912,6 +917,8 @@ const BASIS_HELP = {
 };
 // Old kinds of expense (from before the three splits) still show, as Other.
 const catOf = e => CATEGORIES[e.category] || CATEGORIES.other;
+// Remember the tag of a family picked on a form, as it was when picked.
+function tagOf(d, id) { const f = S.trip.families.find(x => x.id === Number(id)); if (f) (d.tags ||= {})[id] = f.uid; }
 
 function renderEditor(id) {
   const { tournament: t, families, expenses } = S.trip;
@@ -919,6 +926,19 @@ function renderEditor(id) {
   if (final()) { if (e) return renderExpenseView(e); location.hash = `#/t/${t.id}`; return; }
   if (id && !e) { location.hash = `#/t/${t.id}`; return; }
   if ((!S.draft || S.draft.id !== (id || 0)) && (S.draft = keptDraft(t.id, id || 0))) toast("Picked up where you left off.");
+  // A kept draft names its families by number; a number can have gone to another family
+  // since (deleted, then a new one added). Keep only the families that are still the same.
+  if (S.draft && !S.draft.id) {
+    // A pick without its tag (a draft from before tags were kept) can't be checked, so it's cleared.
+    const d0 = S.draft, same = id => !!d0.tags?.[id] && S.trip.families.find(f => f.id === Number(id))?.uid === d0.tags[id];
+    const gone = [...Object.keys(d0.split || {}), ...(d0.paid_by ? [String(d0.paid_by)] : [])].filter(id => !same(id));
+    d0.tags ||= {};
+    if (gone.length) {
+      for (const id of gone) delete d0.split[id];
+      if (d0.paid_by && !same(d0.paid_by)) d0.paid_by = "";
+      toast("Some families on this expense changed since it was started. Check who paid and who took part.");
+    }
+  }
   // A draft kept from before the three splits takes today's kinds.
   if (S.draft && !CATEGORIES[S.draft.category]) S.draft.category = "other";
   if (S.draft && !BASES[S.draft.basis]) { S.draft.basis = CATEGORIES[S.draft.category].basis; S.draft.split = {}; }
@@ -927,7 +947,8 @@ function renderEditor(id) {
     // A new expense starts as a team meal with nobody ticked: whoever enters it ticks who took part.
     S.draft = e ? { ...e, category: CATEGORIES[e.category] ? e.category : "other", basis: BASES[e.basis] ? e.basis : "took_part", split: { ...e.split },
         amount: (e.amount_cents / 100).toFixed(2), catTouched: true, dateTouched: true }
-      : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "took_part", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, client_key: crypto.randomUUID() };
+      : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "took_part", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, client_key: crypto.randomUUID(), tags: {} };
+    if (!e && S.draft.paid_by) tagOf(S.draft, S.draft.paid_by);
   }
   const d = S.draft;
   const days = tournamentDays(t.start_date, t.end_date);
@@ -962,7 +983,7 @@ function renderEditor(id) {
   ["amt", "desc", "vend"].forEach(k => $(k).addEventListener("input", () => { pull(); drawSplit(); }));
   $("day").onchange = () => { d.date = $("day").value || null; d.dateTouched = true; };
   $("cat").onchange = () => { d.category = $("cat").value; d.catTouched = true; followCategory(d); drawSplit(); };
-  $("paid").onclick = ev => { const b = ev.target.closest("[data-fam]"); if (!b) return; d.paid_by = Number(b.dataset.fam); markPaid(); drawSplit(); };
+  $("paid").onclick = ev => { const b = ev.target.closest("[data-fam]"); if (!b) return; d.paid_by = Number(b.dataset.fam); tagOf(d, d.paid_by); markPaid(); drawSplit(); };
   $("basis").onclick = ev => { const b = ev.target.closest("[data-basis]"); if (!b || b.dataset.basis === d.basis) return; d.basis = b.dataset.basis; drawSplit(); };
   $("ex").onsubmit = async ev => { ev.preventDefault(); pull(); await saveExpense(); };
   drawReceipt();
@@ -1037,14 +1058,14 @@ function drawSplit() {
   const start = f => Math.min(50, Math.max(1, familySize(f)));
   el.onclick = ev => {
     if (!ev.target.closest("[data-everyone]")) return;
-    for (const f of families) if (!(d.split[f.id] > 0)) d.split[f.id] = start(f);
+    for (const f of families) if (!(d.split[f.id] > 0)) { d.split[f.id] = start(f); tagOf(d, f.id); }
     drawSplit();
   };
   el.onchange = ev => {
     const c = ev.target.closest("[data-inc]");
     if (!c) { const u = ev.target.closest("[data-units]"); if (u && !(Number(u.value) >= 1)) drawSplit(); return; }   // left empty: show the count that stands
     const f = families.find(x => x.id === Number(c.dataset.inc));
-    if (c.checked) d.split[c.dataset.inc] = start(f); else delete d.split[c.dataset.inc];
+    if (c.checked) { d.split[c.dataset.inc] = start(f); tagOf(d, f.id); } else delete d.split[c.dataset.inc];
     drawSplit();
     el.querySelector(`[data-${c.checked ? "units" : "inc"}="${c.dataset.inc}"]`)?.focus();
   };
@@ -1220,19 +1241,27 @@ async function saveExpense() {
   const payer = S.trip.families.find(f => f.id === Number(d.paid_by));
   const body = { description: d.description, vendor: d.vendor, date: d.date, category: d.category, basis: d.basis,
     amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at, rev: d.rev, client_key: d.client_key,
-    ...(!d.id && payer?.uid && { paid_by_uid: payer.uid }),
-    // Family numbers can be reused after a delete, so the families ticked are named by their tags too.
-    ...(d.basis === "took_part" && { split_uids: Object.fromEntries(Object.keys(d.split).map(id => [id, S.trip.families.find(f => f.id === Number(id))?.uid])) }) };
+    // Family numbers can be reused after a delete, so the families are named by the tags they
+    // had when they were picked: a replacement family on the same number is refused, not charged.
+    ...(!d.id && (d.tags?.[d.paid_by] || payer?.uid) && { paid_by_uid: d.tags?.[d.paid_by] || payer.uid }),
+    ...(d.basis === "took_part" && { split_uids: Object.fromEntries(Object.keys(d.split).map(id => [id, d.tags?.[id] || S.trip.families.find(f => f.id === Number(id))?.uid])) }) };
   // A new expense can wait on the phone for a signal; an edit needs one.
   const canWait = !d.id, who = whoNow();
+  // The form is frozen from here until the save is settled: a change made while it sends,
+  // including during the check below, would otherwise be dropped from what is saved.
+  // Moving to another screen unfreezes it (see show()).
+  const btn = document.getElementById("save"), label = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Saving…`;
+  app.inert = true;
+  const thaw = () => { if (S.draft === d) { app.inert = false; btn.disabled = false; btn.innerHTML = label; } };
   // A family added or removed on another phone since the form opened would be charged
   // or dropped without this form showing it: catch up, show it, and let them check.
   let fresh;
   try { fresh = await api(`/tournaments/${t.id}`); }
   catch (e) {
     if (e instanceof AuthError) return renderLogin();
-    if (e.unsure && canWait) { if (holdExpense(t, who, body, d.fromWait) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
-    return toast(e.message);
+    if (e.unsure && canWait) { if (holdExpense(t, who, body, d.fromWait) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } else thaw(); return; }
+    thaw(); return toast(e.message);
   }
   // What the shares on this form were worked out from: for who took part, the families
   // ticked; otherwise the fencers and their fencing days.
@@ -1240,21 +1269,16 @@ async function saveExpense() {
     : tr.families.filter(f => f.kind !== "staff").map(f => [f.id, f.people.filter(p => p.is_fencer).map(p => [p.id, p.fencing_days])]));
   if (S.draft !== d) return;
   if (whoIs(fresh) !== whoIs(S.trip)) {
+    thaw();
     S.trip = fresh;
     renderEditor(d.id || null);
     return toast("Who's on the trip changed since you opened this. Check the shares, then save again.");
   }
-  // The form is frozen while it sends: a change made meanwhile would be thrown away
-  // when the save lands. Moving to another screen unfreezes it (see show()).
-  const btn = document.getElementById("save"), label = btn.innerHTML;
-  btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Saving…`;
-  app.inert = true;
   let r;
   try { r = d.id ? await api(`/expenses/${d.id}`, { method: "PATCH", body }) : await api(`/tournaments/${t.id}/expenses`, { method: "POST", body }); }
   catch (e) {
     if (e instanceof AuthError) return renderLogin();
-    const here = S.draft === d;
-    if (here) { app.inert = false; btn.disabled = false; btn.innerHTML = label; }
+    thaw();
     // No answer: it may have saved. If it can wait, it waits (even if they've moved on).
     if (e.unsure && canWait) { if (holdExpense(t, who, body, d.fromWait) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
     return toast(e.message);
@@ -1454,7 +1478,8 @@ app.addEventListener("click", async ev => {
         S.draft = { id: 0, description: x.description || "", vendor: x.vendor || "", date: x.date || null, category, basis: CATEGORIES[category].choose && BASES[x.basis] ? x.basis : CATEGORIES[category].basis,
           amount: (x.amount_cents / 100).toFixed(2), paid_by: payer ? payer.id : "", split,
           receipt_key: x.receipt_key, receipt_type: x.receipt_type, catTouched: true, dateTouched: true,
-          client_key: crypto.randomUUID(), fromWait: w.key };
+          client_key: crypto.randomUUID(), fromWait: w.key,
+          tags: { ...(x.split_uids || {}), ...(payer && x.paid_by_uid ? { [payer.id]: x.paid_by_uid } : {}) } };
         keepDraft(); location.hash = `#/t/${t.id}/e/new`; return;
       }
       case "unwait": {

@@ -165,8 +165,11 @@ async function allowedDays(env: Env, tid: number) {
 }
 
 async function loadTrip(env: Env, tid: number) {
-  const t = await tournament(env, tid);
-  const [fam, ppl, exp, pay, act, fp] = await env.DB.batch([
+  await tournament(env, tid);                      // 404s for a missing or deleted trip
+  // The trip's own row is in the same batch as everything else, so what the screen shows
+  // (the treasurer included) and the fingerprint finalize checks are one version.
+  const [tr, fam, ppl, exp, pay, act, fp] = await env.DB.batch([
+    env.DB.prepare("SELECT * FROM tournaments WHERE id = ?").bind(tid),
     env.DB.prepare("SELECT * FROM families WHERE tournament_id = ? ORDER BY name COLLATE NOCASE").bind(tid),
     env.DB.prepare("SELECT p.* FROM people p JOIN families f ON f.id = p.family_id WHERE f.tournament_id = ? ORDER BY p.is_fencer DESC, p.id").bind(tid),
     env.DB.prepare("SELECT * FROM expenses WHERE tournament_id = ? ORDER BY date IS NULL, date, id").bind(tid),
@@ -182,6 +185,8 @@ async function loadTrip(env: Env, tid: number) {
     ({ ...p, is_fencer: !!p.is_fencer, days: [], fencing_days: p.is_fencer ? JSON.parse(p.fencing_days) : [] }));
   const families = (fam.results as any[]).map(f => ({ ...f, days: [], people: people.filter(p => p.family_id === f.id) }));
   const expenses = (exp.results as any[]).map(e => ({ ...e, split: JSON.parse(e.split) }));
+  const t = tr.results[0] as any;
+  if (!t || t.deleted_at) throw new HttpError(404, "This trip doesn't exist or was deleted");
   return { tournament: t, families, expenses, payments: pay.results, activity: act.results, fingerprint: (fp.results[0] as any).f as string };
 }
 
@@ -633,13 +638,14 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const fdays = !fencer || b.fencing_days == null ? [] : cleanDays(b.fencing_days, all);
     const r = await env.DB.prepare(`INSERT INTO people (family_id, name, is_fencer, days, fencing_days, client_key)
       SELECT ?1, ?2, ?3, '[]', ?4, ?5
-      WHERE EXISTS (SELECT 1 FROM tournaments WHERE id = ?6 AND status = 'open' AND deleted_at IS NULL AND start_date || '/' || end_date = ?7) ON CONFLICT DO NOTHING RETURNING id`)
-      .bind(fid, str(b.name), fencer ? 1 : 0, JSON.stringify(fdays), key, tid, all.span).first<any>();
+      WHERE EXISTS (SELECT 1 FROM tournaments WHERE id = ?6 AND status = 'open' AND deleted_at IS NULL AND start_date || '/' || end_date = ?7)
+        AND (SELECT uid FROM families WHERE id = ?1 AND tournament_id = ?6) = ?8 ON CONFLICT DO NOTHING RETURNING id`)
+      .bind(fid, str(b.name), fencer ? 1 : 0, JSON.stringify(fdays), key, tid, all.span, b.uid).first<any>();
     if (!r && key) {
       const again = await env.DB.prepare("SELECT id FROM people WHERE client_key = ? AND family_id = ?").bind(key, fid).first<any>();
       if (again) return json({ id: again.id, already: true }, 200);
     }
-    if (!r) throw closed();
+    if (!r) throw stale();                 // finalized, new dates, or the family was replaced
     await log(env, tid, name, `added ${str(b.name)}${fencer ? " (fencer)" : ""}`);
     return json({ id: r.id }, 201);
   }
@@ -669,8 +675,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         // Name and Fencer. Unticking Fencer keeps the days, so ticking it again brings them back.
         const fencer = b.is_fencer == null ? !!p.is_fencer : !!b.is_fencer;
         const fdays = b.fencing_days != null ? JSON.stringify(cleanDays(b.fencing_days, all)) : null;
-        const u = await env.DB.prepare(`UPDATE people SET name = ?, is_fencer = ?, fencing_days = COALESCE(?, fencing_days) WHERE ${guard}`)
-          .bind(str(b.name) || p.name, fencer ? 1 : 0, fdays, ...gb).run();
+        // Only what was sent changes: a name fix mustn't put back a Fencer tick another
+        // phone just took off, from the value this request read a moment ago.
+        const u = await env.DB.prepare(`UPDATE people SET name = COALESCE(?, name), is_fencer = COALESCE(?, is_fencer), fencing_days = COALESCE(?, fencing_days) WHERE ${guard}`)
+          .bind(str(b.name) || null, b.is_fencer == null ? null : fencer ? 1 : 0, fdays, ...gb).run();
         if (!u.meta.changes) throw new HttpError(409, "That changed on another phone a moment ago. Reload and try again.");
       }
       await log(env, p.tournament_id, name, `updated ${str(b.name) || p.name}`);

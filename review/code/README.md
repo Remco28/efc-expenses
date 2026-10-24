@@ -471,3 +471,20 @@ Fixed after the audit: the fingerprint is read in the same database batch as the
 Not given rows, and why: "1.250" read as $1.25 (US parents write 1,250; LOW, left); a waiting expense refused after finalize shows only on its payer's phone (accepted in saving design v4 and by Frank); five scripts crashed in the fix auditor's copy because its fresh database had no practice trip (the scripts expect trip 50 to be the practice trip, as in our test database; noted in briefs/README.md).
 
 **So round 11 had two HIGH findings (rows 1 and 5), and a round 12 follows.**
+
+## Outside review, 2026-10-24 (Codex, fresh, after the rebuild)
+
+Frank brought in an outside reviewer (Codex) with a short brief, on d4b7f66. Report: outside-2026-10-24/codex-report.md. Six findings, every one reproduced (three in a browser, three by pausing the server between its read and its write). Its ratings agree with ours on all six.
+
+| # | Finding | Their rating | Ours | How checked | Done |
+|---|---|---|---|---|---|
+| R2-01 | A fencing-day refresh that finishes after you've moved to another trip replaces the trip the new screen acts on: volunteering as treasurer on trip B saved it on trip A | HIGH | HIGH | Reproduced in Chromium (theirs); after the fix, the same steps put the treasurer on B (ours) | A reload only replaces the loaded trip if the screen is still that trip's |
+| R2-02 | A change typed while Save does its first check (reloading the trip) is dropped: the earlier amount is saved and "Expense saved" shown | HIGH | HIGH | Reproduced (theirs); after the fix the form is frozen during the check and typing doesn't reach it (ours) | The form freezes from the start of the save, and unfreezes on every way out |
+| R2-03 | An unfinished meal kept across a reload names families by number; a family deleted and replaced on that number is charged | MEDIUM | MEDIUM | Reproduced (theirs and ours) | Each family picked keeps its tag with the draft; on reopening, picks whose family changed are cleared, with a message; tags sent are the ones from when picked |
+| R2-04 | A name-only change rewrote Fencer from the value read earlier, undoing another phone's change | MEDIUM | MEDIUM | Reproduced by pausing the handler (theirs); round10.mjs (ours, sequential) | Only fields sent are written |
+| R2-05 | The trip row (with the treasurer) was read before the batch the fingerprint is in, so a response could pair one treasurer with another's fingerprint | MEDIUM | MEDIUM | Reproduced by pausing the handler (theirs) | The trip row is read in the same batch |
+| R2-06 | Adding a person checked the family's tag, then inserted by number: a family replaced in between got the person | MEDIUM | MEDIUM | Reproduced by pausing the handler (theirs); round10.mjs (ours, sequential) | The insert itself requires the family's tag |
+
+**Believed, and wrong:** that round 11's audit closed the snapshot class ("the fingerprint is read in the same batch as the numbers"). The trip row itself was still read outside it (R2-05). And the save-time freeze (round 9) was believed to protect the whole save; it started after the first check.
+
+All API scripts pass (round10.mjs 36 checks) and the three browser findings were re-run against the fix.
