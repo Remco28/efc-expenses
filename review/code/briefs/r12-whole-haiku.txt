@@ -1,0 +1,18 @@
+You are an experienced engineer reviewing a small web app before a fencing club relies on it for real money.
+
+Your copy of the code is /tmp/claude-1000/-home-frank-Dev-agent-office/338f6aba-3ec2-449c-a0be-b0793dfbf9ad/scratchpad/rl12/whole-haiku, at commit 64a1243. It is yours: run it, add scripts, change anything there; nothing you do reaches anyone. To run the app (from that folder):
+  npx wrangler d1 migrations apply efc-expenses --local --persist-to .local-db
+  npx wrangler dev --port 8872 --ip 127.0.0.1 --persist-to .local-db --inspector-port 9872
+Run the server in the background and stop it when you are done: kill the process running 'wrangler dev --port 8872' (fuser on the port alone lets wrangler restart it), then check port 8872 is free. The access code is fence-local-test. Earlier reviews and what was done about them: review/code/README.md in your copy. Stay inside your copy: do not touch /home/frank/Dev or anything outside it.
+
+What it is for: parents of a fencing club use it to split the shared costs of team trips to tournaments (team meals and outings, and the coach's travel, hotel and meals), fairly, and settle up through one volunteer treasurer. A handful of parents use it, sometimes at the same moment from their phones.
+
+Review this code. In the ways parents really use it, does it give anyone a wrong result or lose their work?
+
+Do not hunt for problems to fill space. "Nothing wrong" is a real and useful answer.
+
+Intended, not findings: anyone with the access code can change anything; reading receipts with AI is switched off in your copy; a page opened before a release is told to reload on its next change. Also chosen on purpose: the limits listed under "What it doesn't handle, on purpose" in review/design/saving-design-v4.md, and the club's rules for splitting costs in review/design/billing-model.md.
+
+For each problem: a severity (HIGH: in real use, someone ends up with a wrong result or loses work without noticing; MEDIUM: only in a rare timing or sequence, or wrong but visible and recoverable; LOW: an annoyance or abuse by someone already trusted), what happens step by step, and whether you ran it or reasoned it from the code.
+
+Your final message is your report.
