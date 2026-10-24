@@ -1,3 +1,5 @@
+> **Status (2026-10-23): built, with changes.** After the split was rebuilt (billing-model.md), every new expense can wait on the phone, ticked meals included: they name their families by their tags, so the "hand-set shares need a signal" rule below no longer applies. A refused expense can be opened to fix (it comes back in the form as a new one). Round 11 added: a waiting meal shows who's ticked.
+
 # Saving on a bad connection: design v4
 
 v3 went to two fresh critics (saving-design-v3-critic-*.md). Both, independently, proposed making it smaller. Frank agreed to both cuts. This is the third pass; changes from v3 are marked **(v4)**.

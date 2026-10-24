@@ -31,7 +31,7 @@ Gone: team supplies and ground transport as kinds of expense (supplies are the c
 - Each kind's split is fixed; only Other lets the person pick, and it starts on "who took part".
 - A head count is saved as entered (a sibling added later doesn't change past meals). It can be above the family's size (a visiting grandparent). Unticking is how a family is left out.
 - "Tick everyone" for a big dinner, then untick the few who didn't come.
-- Fencing days are the days actually fenced. Anyone can fix them until the trip is finalized.
+- Fencing days are the days actually fenced. Anyone can fix them until the trip is finalized. A new fencer starts with none ticked (Frank, round 11), so a forgotten one is flagged, not charged for every day.
 - A trip-wide "Fencing days" screen replaces "Check a day": every fencer, tick their days; the treasurer checks it before finalizing.
 - A fencer with no days ticked still pays their share of coach travel and nothing toward the hotel. The app warns ("Ava has no fencing days ticked") and blocks nothing.
 - Parents' own parking and gas aren't shared. Only the coach's getting around is.

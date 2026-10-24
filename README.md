@@ -6,7 +6,7 @@ Coaching fees are not tracked here, because the coach bills those directly. Pers
 
 ## How costs are split
 
-Families and their people are on the trip as a whole; nobody records which days a family is there. The one per-day fact is **which days each fencer actually competes**, ticked on the family's screen or on the trip's Fencing days screen. Anyone can fix them until the trip is finalized.
+Families and their people are on the trip as a whole; nobody records which days a family is there. The one per-day fact is **which days each fencer actually competes**, ticked on the family's screen or on the trip's Fencing days screen. Anyone can fix them until the trip is finalized. A new fencer starts with none ticked, and the app flags any fencer with none until someone ticks them.
 
 Each kind of expense has its split:
 
@@ -23,6 +23,10 @@ Team meals are opt-in: nobody is included until someone ticks who took part, bec
 Getting the coach there costs the same whether your fencer competes one day or ten, so it is split equally per fencer. Keeping the coach there grows with every extra day, so it is split by the days each kid actually fences. A fencer with no fencing days ticked still pays their share of the coach's travel and nothing toward the rest; the app warns about it.
 
 Shares are computed to the cent, and they always add up to the expense total. The math lives in [`public/split.js`](public/split.js) and is covered by `npm test`.
+
+## Reviews and designs
+
+How the app was reviewed, what each review found and what was done, and the designs behind the split and the offline saving, are in [`review/`](review/README.md). Start with its README.
 
 ## How it's built
 
@@ -44,6 +48,8 @@ npm run dev                           # http://localhost:8787
 npm test
 ```
 
+The practice trip is the trip flagged `is_sandbox`. On a fresh database, add one row for it (any dates; `npx wrangler d1 execute efc-expenses --local --command "INSERT INTO tournaments (name, start_date, end_date, created_at, created_by, is_sandbox) VALUES ('Practice trip', '2027-03-13', '2027-03-14', '2026-10-01', 'seed', 1)"`), then tap **Reset practice trip** in the app: that fills it from `src/sandbox.js`.
+
 ## Deploying (first time)
 
 ```bash
@@ -55,6 +61,8 @@ npx wrangler secret put ANTHROPIC_API_KEY
 npm run db:migrate
 npm run deploy
 ```
+
+Then add the practice trip's row on the live database (the same `INSERT` as under Running locally, with `--remote` instead of `--local`) and tap **Reset practice trip** once.
 
 `wrangler.jsonc` routes the Worker to `efcexpenses.teamremco.org`. That domain's DNS zone is on Cloudflare, so the deploy step creates the custom domain itself.
 

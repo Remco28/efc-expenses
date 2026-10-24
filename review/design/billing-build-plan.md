@@ -1,3 +1,5 @@
+> **Status (2026-10-23): built**, with one change from below: a new fencer starts with no fencing days (Frank, round 11), so a forgotten fencer is flagged rather than charged for every day. The test scripts are in review/code/briefs (see its README).
+
 # Building the new split (billing-model.md): the plan
 
 ## Stored data
