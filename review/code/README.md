@@ -550,3 +550,19 @@ Not in this round (LOW): typed text in the trip-details or treasurer sheet is lo
 
 1. A "keep my version" fix for a conflict that silently discards the other person's version of the fields you didn't touch.
 2. Letting a server guess what a request meant from a status read a moment ago, instead of from what the request says.
+
+## Round 13, 2026-10-24 (round 6 of the new method)
+
+Reviewed f290c1c (round 12's fixes). Cast as round 12. Reports in round13/. No reader rated anything HIGH; the rules reader again found the app agreeing with billing-model.md, and the fix auditor found round 12's changes doing what they say. Four of the five only read the code this round (Haiku whole-code ran the money and refusal paths against its copy), so "no HIGH" rests mostly on reading.
+
+| # | Finding | Found by (their rating) | Ours | How checked | Done |
+|---|---|---|---|---|---|
+| 1 | An edit walked away from mid-save, then refused, is lost: the code only keeps new expenses, though round 12's plan said an edit keeps its draft | bad-signal (MEDIUM), whole-code Haiku (MEDIUM, ran the refusal) | MEDIUM: the same mechanism as round 10 row 4 and round 12 row 2; and a fix built differently from its plan (round 10's mistake 2) | Two readers, independent; the refusal reproduced | Plan and peers first |
+| 2 | A tap on the family or fencing-days screen that fails with no signal stays showing as saved (the redraw needs a signal too); a typed name or pay note likewise | bad-signal (MEDIUM, reasoned) | MEDIUM: visibly wrong once the toast fades, recoverable | Read in the code | Plan and peers first |
+| 3 | The coach hotel or own meals can't be saved until some fencer has a fencing day ticked (the form blocks; the server and the rules don't) | rules (LOW), whole-code Sonnet (LOW) | LOW, but a choice for Frank | Two readers | Asked Frank |
+| 4 | The settle tab's advice for an expense nobody is splitting says to tick who's sharing, which fits only who-took-part | rules (LOW) | LOW | Read | To fix |
+| 5 | The in-app family statement still leaves out a $0.00 share (round 12 fixed only the PDF); the PDF's "leaves out N expenses" note is cut off by the box width; the PDF family table says "N going" | fix auditor, rules (LOW) | LOW: a fix applied in one place and missed in another | Read | To fix |
+| 6 | A legacy expense's form takes `base` from the raw row, so its kind/split group always looks changed; a receipt key missing from storage loops with "changed since you opened it" | fix auditor (LOW) | LOW | Read | To fix the first; the second predates this and is rare |
+| 7 | The Day picker shows "Whole trip" for an expense dated outside the trip; a queued expense sending refreshes the Families tab under someone typing; the trip list lumps refused items into "not sent yet" | whole-code Haiku, bad-signal (LOW) | LOW | Read | To fix the first and third |
+| 8 | The PDF prints characters outside Latin-1 as "?"; "12.345" rounds silently; a hung request holds the family screen's queue up to 25 s; receipts of saves that never complete stay in storage; sheets that fail with no signal lose what was typed (round 3) | whole-code Sonnet, bad-signal (LOW) | LOW | Read | Not fixed: rare or cosmetic |
+| 9 | A waiting expense refused after finalize is seen only on its payer's phone | bad-signal (MEDIUM) | LOW, accepted | — | Frank's choice in saving design v4 (no reminder at finalize); "Open it to fix" can't help until the trip is reopened |
