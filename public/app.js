@@ -1302,7 +1302,9 @@ async function saveExpense() {
   if (amount_cents <= 0) { document.getElementById("amt").focus(); return toast("Enter the amount"); }
   if (!d.paid_by) { document.getElementById("paid").scrollIntoView({ block: "center" }); return toast("Pick the family that paid"); }
   const s = shares({ ...d, amount_cents }, S.trip.families);
-  if (!s.total) return toast(d.basis === "took_part" ? "Tick who took part" : d.basis === "per_fencer" ? "There are no fencers on the trip yet" : "No fencer has fencing days ticked yet");
+  // A fencing-days expense (the coach's hotel, own meals) can be saved before any days are
+  // ticked (Frank): it's shared out as they are, and finalize waits until it is.
+  if (!s.total && d.basis !== "fencer_day") return toast(d.basis === "took_part" ? "Tick who took part" : "There are no fencers on the trip yet");
   const payer = S.trip.families.find(f => f.id === Number(d.paid_by));
   const body = { description: d.description, vendor: d.vendor, date: d.date, category: d.category, basis: d.basis,
     amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at, rev: d.rev, client_key: d.client_key,
@@ -1364,7 +1366,7 @@ async function saveExpense() {
   }
   // A retry of a save that had landed: it's on the trip as first sent.
   toast(r.already && !r.same ? "Your first save went through as it was then. Open it from the list to change it."
-    : S.draft === d ? "Expense saved" : `${d.description || "Expense"} saved on ${t.name}`);
+    : S.draft === d ? (s.total ? "Expense saved" : "Expense saved. It's shared out once fencing days are ticked.") : `${d.description || "Expense"} saved on ${t.name}`);
   if (d.fromWait) dropWaiting(d.fromWait);
   if (keptDraft(t.id, d.id || 0)?.client_key === d.client_key) dropDraft();   // not offered again if they come back
   if (S.draft !== d) return;            // they've moved on to something else meanwhile

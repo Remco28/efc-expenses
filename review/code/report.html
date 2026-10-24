@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EFC review rounds</title>
+<style>
+  :root {
+    --bg: #f6f5f1; --card: #ffffff; --ink: #1d2433; --ink2: #4a5468; --muted: #7a8396; --line: #e2e0d8;
+    --accent: #23395d; --tab: #ebe8df;
+    --high: #b3261e; --high-bg: #fbe9e7; --med: #9a5b00; --med-bg: #fdf1dd; --low: #3f6b4a; --low-bg: #e8f2ea;
+    --pin: #fff3c4; --pin-line: #d9a400;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171d; --card: #1d2129; --ink: #e8eaf0; --ink2: #b6bccb; --muted: #8b93a6; --line: #2e3440;
+      --accent: #9db6e6; --tab: #262b35;
+      --high: #ff8a80; --high-bg: #3a1f1d; --med: #f2b45a; --med-bg: #3a2c16; --low: #8fd19e; --low-bg: #1d3324;
+      --pin: #3b3317; --pin-line: #d9a400;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 0 0 10px; }
+  .sub { color: var(--ink2); margin: 0 0 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  .stakes { border-left: 5px solid var(--accent); }
+  .stakes p { margin: 4px 0; }
+  .muted { color: var(--muted); font-size: 14px; }
+
+  /* trend: a compact table, one column per round */
+  .trend { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  .trend th, .trend td { padding: 6px 4px; text-align: center; border-bottom: 1px solid var(--line); }
+  .trend th { font-weight: 600; font-size: 13px; color: var(--ink2); }
+  .trend td:first-child, .trend th:first-child { text-align: left; white-space: nowrap; }
+  .num { display: inline-block; min-width: 30px; padding: 1px 8px; border-radius: 999px; font-weight: 700; }
+  .num.high { background: var(--high-bg); color: var(--high); }
+  .num.med { background: var(--med-bg); color: var(--med); }
+  .num.zero { color: var(--muted); font-weight: 400; }
+  .trend .cur { background: var(--tab); }
+
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 14px; }
+  .tabs button { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 999px; padding: 6px 14px; font: inherit; font-size: 14px; cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 600; }
+  .panel[hidden] { display: none; }
+
+  /* the app map */
+  .map { display: grid; grid-template-columns: 1fr 70px 1fr; gap: 10px; align-items: stretch; }
+  .side { border: 1px dashed var(--line); border-radius: 10px; padding: 10px; }
+  .side h3 { margin: 0 0 8px; font-size: 14px; color: var(--ink2); }
+  .box { border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; margin: 6px 0; font-size: 14px; background: var(--card); }
+  .box .why { font-size: 12px; color: var(--muted); }
+  .box.pin { background: var(--pin); border: 2px solid var(--pin-line); }
+  .box.pin::before { content: attr(data-pins); float: right; font-weight: 700; color: var(--pin-line); font-size: 12px; }
+  .wire { display: flex; flex-direction: column; justify-content: center; align-items: center; color: var(--muted); font-size: 12px; text-align: center; }
+  .wire span { font-size: 22px; line-height: 1; }
+  .indent { margin-left: 16px; }
+
+  /* findings */
+  .finding { border-left: 5px solid var(--med); }
+  .finding.high { border-left-color: var(--high); }
+  .finding.low { border-left-color: var(--low); }
+  .tag { display: inline-block; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; margin-right: 6px; }
+  .tag.med { background: var(--med-bg); color: var(--med); }
+  .tag.low { background: var(--low-bg); color: var(--low); }
+  .tag.pinref { background: var(--pin); color: var(--ink); border: 1px solid var(--pin-line); }
+  .facts { display: grid; grid-template-columns: 130px 1fr; gap: 4px 12px; margin: 10px 0 0; font-size: 15px; }
+  .facts dt { color: var(--muted); }
+  .facts dd { margin: 0; }
+  .decision { border: 2px solid var(--accent); }
+  .decision ol { margin: 6px 0 0; padding-left: 20px; }
+  .decision li { margin: 6px 0; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--accent); }
+  .lows li { margin: 4px 0; }
+  .gloss dt { font-weight: 600; }
+  .gloss dd { margin: 0 0 8px; color: var(--ink2); }
+  @media (max-width: 640px) {
+    .map { grid-template-columns: 1fr; }
+    .wire { flex-direction: row; gap: 8px; }
+    .wire span { transform: rotate(90deg); }
+    .facts { grid-template-columns: 1fr; }
+    .facts dt { margin-top: 6px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>EFC trip expenses: review rounds</h1>
+  <p class="sub">One page per project, rebuilt after each round. Tap a round to see it. The detail for agents stays in <code>README.md</code> beside this file.</p>
+
+  <div class="card stakes">
+    <h2>The stakes</h2>
+    <p><b>A club tool</b> for a handful of parents splitting tournament trip costs. Real money, but small amounts, and nobody uses it for real until early November.</p>
+    <p><b>So the review stops when</b> nothing left could lose money or someone's work in normal use. Problems that need a rare timing (two phones in the same second) are worth knowing, not worth endless rounds.</p>
+  </div>
+
+  <div class="card">
+    <h2>How the rounds went</h2>
+    <table class="trend" aria-label="Serious and medium problems per round, after our ratings were audited">
+      <thead><tr><th></th><th>R9</th><th>R10</th><th>R11</th><th>Outside</th><th>R12</th><th class="cur">R13</th></tr></thead>
+      <tbody>
+        <tr><td>Serious</td><td><span class="num high">2</span></td><td><span class="num high">2</span></td><td><span class="num high">2</span></td><td><span class="num high">2</span></td><td><span class="num zero">0</span></td><td class="cur"><span class="num zero">0</span></td></tr>
+        <tr><td>Medium</td><td><span class="num med">10</span></td><td><span class="num med">6</span></td><td><span class="num med">5</span></td><td><span class="num med">4</span></td><td><span class="num med">4</span></td><td class="cur"><span class="num med">2</span></td></tr>
+      </tbody>
+    </table>
+    <p class="muted">Serious: real use gives a wrong result or loses work, and nobody notices. Medium: needs a rare timing, or you'd see it and can fix it. Counts are after the auditor checked our ratings. Between R11 and the outside review, how costs are split was rebuilt on the club's real rules.</p>
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="Rounds">
+    <button role="tab" aria-selected="false" aria-controls="r9" id="t-r9">R9</button>
+    <button role="tab" aria-selected="false" aria-controls="r10" id="t-r10">R10</button>
+    <button role="tab" aria-selected="false" aria-controls="r11" id="t-r11">R11</button>
+    <button role="tab" aria-selected="false" aria-controls="out" id="t-out">Outside</button>
+    <button role="tab" aria-selected="false" aria-controls="r12" id="t-r12">R12</button>
+    <button role="tab" aria-selected="true" aria-controls="r13" id="t-r13">R13 (latest)</button>
+  </div>
+
+  <!-- Earlier rounds: one line each in this first version -->
+  <section class="panel" id="r9" role="tabpanel" aria-labelledby="t-r9" hidden>
+    <div class="card"><h2>Round 9</h2><p>Saving on a bad signal: retries that duplicated or dropped corrections, saves that hung, drafts lost on reload. Two serious after the audit, both fixed. This round led to the "hold expenses on the phone until there's a signal" design.</p></div>
+  </section>
+  <section class="panel" id="r10" role="tabpanel" aria-labelledby="t-r10" hidden>
+    <div class="card"><h2>Round 10</h2><p>A fencer's picked days could vanish when a family day was switched off and on, silently changing coach-cost shares. Fixed, then made moot when attendance days were removed.</p></div>
+  </section>
+  <section class="panel" id="r11" role="tabpanel" aria-labelledby="t-r11" hidden>
+    <div class="card"><h2>Round 11</h2><p>First review of the rebuilt split. Serious: new fencers started with every day ticked, charging the coach's hotel for days not fenced. You chose "start with none".</p></div>
+  </section>
+  <section class="panel" id="out" role="tabpanel" aria-labelledby="t-out" hidden>
+    <div class="card"><h2>Outside review</h2><p>Codex, fresh. Serious: a slow refresh could send your next action to the wrong trip, and a correction typed during Save's first check was dropped. All six fixed, then put through peers after the fact (they found eight more gaps).</p></div>
+  </section>
+  <section class="panel" id="r12" role="tabpanel" aria-labelledby="t-r12" hidden>
+    <div class="card"><h2>Round 12</h2><p>No serious problems. Medium: treasurer forms could act on the wrong kind of trip; an edit refused because someone else changed the expense kept failing. Peers broke the first plan (it would have erased the other person's changes) before any code.</p></div>
+  </section>
+
+  <!-- Latest round: the full version -->
+  <section class="panel" id="r13" role="tabpanel" aria-labelledby="t-r13">
+    <div class="card">
+      <h2>Round 13 in one line</h2>
+      <p><b>No serious problems.</b> Two medium ones, both about a weak signal. The money math and the club's rules check out everywhere.</p>
+    </div>
+
+    <div class="card">
+      <h2>Where the problems are</h2>
+      <div class="map" aria-label="Map of the app; highlighted boxes are where this round's problems are">
+        <div class="side">
+          <h3>On the phone</h3>
+          <div class="box">Trip list</div>
+          <div class="box">A trip: Expenses, Families, Settle up, Treasurer tabs</div>
+          <div class="box indent pin" data-pins="1">Expense form<div class="why">add or edit an expense</div></div>
+          <div class="box indent pin" data-pins="2">Family screen and Fencing days<div class="why">people, Fencer, fencing-day ticks</div></div>
+          <div class="box pin" data-pins="1">Waiting to send<div class="why">expenses saved with no signal, sent later</div></div>
+        </div>
+        <div class="wire"><span>⇄</span>saves and<br>reloads<br>(need a signal)</div>
+        <div class="side">
+          <h3>On the server</h3>
+          <div class="box">Trips and their treasurer</div>
+          <div class="box">Families, people, fencing days</div>
+          <div class="box">Expenses and who took part</div>
+          <div class="box">Payments, after finalizing</div>
+        </div>
+      </div>
+      <p class="muted">Both problems sit on the phone side, in what happens when a save can't reach the server. Nothing on the server side came up.</p>
+    </div>
+
+    <div class="card finding">
+      <span class="tag med">Medium</span><span class="tag pinref">1</span>
+      <b>An edit you walk away from mid-save, then refused, is lost</b>
+      <dl class="facts">
+        <dt>Who it hits</dt><dd>A parent editing an expense who leaves the screen while it's still saving.</dd>
+        <dt>How often</dt><dd>Rare: it also needs the save to be refused (someone else changed that expense) or to get no answer.</dd>
+        <dt>What they'd see</dt><dd>A brief message that the change couldn't be saved. What they typed is gone; they'd retype it.</dd>
+        <dt>Money at risk</dt><dd>None: nothing wrong is saved, a change just doesn't land.</dd>
+        <dt>Fix cost</dt><dd>Medium. The planned fix had holes; doing it properly means a protected place to keep the refused edit.</dd>
+      </dl>
+    </div>
+
+    <div class="card finding">
+      <span class="tag med">Medium</span><span class="tag pinref">2</span>
+      <b>A tap that fails with no signal still shows as saved</b>
+      <dl class="facts">
+        <dt>Who it hits</dt><dd>Someone ticking fencing days (or Fencer) with no signal.</dd>
+        <dt>How often</dt><dd>Whenever a tap is made with no signal, which happens at venues.</dd>
+        <dt>What they'd see</dt><dd>A "may not have saved" message that fades; the tick stays showing. The treasurer sees the real days on the Fencing days screen before finalizing.</dd>
+        <dt>Money at risk</dt><dd>Small: a fencing day that didn't save would shift coach-cost shares until someone notices.</dd>
+        <dt>Fix cost</dt><dd>Small for the simple version: a lasting "Not sure this saved, reload to check".</dd>
+      </dl>
+    </div>
+
+    <div class="card decision">
+      <h2>Your call</h2>
+      <ol>
+        <li><b>Keep going:</b> fix both properly (plan, peers, build), then round 14. It will likely find another layer of rare cases.</li>
+        <li><b>Stop here (recommended):</b> the simple fix for #2, record #1 as a known rare case, and let a couple of parents try it at the next tournament.</li>
+        <li><b>Small question:</b> should the coach's hotel be savable before any fencing days are ticked? Recommended: yes, with a note that it's shared once days are ticked.</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h2>Smaller things (low)</h2>
+      <details><summary>Show the 8 low items</summary>
+        <ul class="lows">
+          <li>The Settle up tab's advice for an expense nobody shares says "tick who's sharing", which fits only meals.</li>
+          <li>The in-app family statement still hides a $0.00 share (the PDF was fixed, the screen wasn't).</li>
+          <li>The PDF's "leaves out N expenses" note gets cut off; its family table still says "N going".</li>
+          <li>An old-style expense's form thinks its kind of cost was changed when it wasn't.</li>
+          <li>The Day picker shows "Whole trip" for an expense dated outside the trip.</li>
+          <li>The trip list counts refused expenses as "not sent yet".</li>
+          <li>The PDF prints names in non-Latin scripts as "?"; "12.345" rounds silently.</li>
+          <li>A waiting expense refused after finalizing is seen only on its payer's phone (your earlier choice).</li>
+        </ul>
+      </details>
+      <p class="muted">The auditor wants three of these "typing lost on a failed save" items rated medium, not low.</p>
+    </div>
+
+    <div class="card">
+      <h2>Words used here</h2>
+      <dl class="gloss">
+        <dt>Signal</dt><dd>The phone's connection. Saves and reloads need it; "no answer" means the phone couldn't tell whether a save landed.</dd>
+        <dt>Refused</dt><dd>The server answered "no", for a reason it gives (the trip was finalized, someone changed the expense first).</dd>
+        <dt>Waiting to send</dt><dd>The list of new expenses kept on the phone until there's a signal.</dd>
+        <dt>Auditor</dt><dd>A separate agent that checks whether we rated our own problems honestly.</dd>
+        <dt>Peers</dt><dd>Fresh agents who try to break a fix plan before any code is written.</dd>
+      </dl>
+    </div>
+  </section>
+</div>
+<script>
+  // Tabs: click or arrow keys; remembers the last round viewed (if storage is allowed).
+  const tabs = [...document.querySelectorAll('[role="tab"]')];
+  function show(tab) {
+    tabs.forEach(t => { const on = t === tab; t.setAttribute("aria-selected", on); t.tabIndex = on ? 0 : -1; document.getElementById(t.getAttribute("aria-controls")).hidden = !on; });
+    try { localStorage.setItem("efc-report-tab", tab.id); } catch {}
+  }
+  tabs.forEach((t, i) => {
+    t.addEventListener("click", () => show(t));
+    t.addEventListener("keydown", e => {
+      const n = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+      if (n) { const next = tabs[(i + n + tabs.length) % tabs.length]; show(next); next.focus(); }
+    });
+  });
+  try { const saved = document.getElementById(localStorage.getItem("efc-report-tab")); if (saved) show(saved); } catch {}
+</script>
+</body>
+</html>
