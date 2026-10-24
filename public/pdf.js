@@ -46,6 +46,7 @@ export async function exportPdf(trip) {
   };
   const W = 612, H = 792, M = 48, CW = W - 2 * M, BOTTOM = M + 22;
   const total = Object.values(rows).reduce((s, r) => s + r.owed, 0);   // only expenses someone shares
+  const unsplitN = expenses.filter(e => !perExpense[e.id].total).length;
   const withReceipt = expenses.filter(e => e.receipt_key);
   const rnum = new Map(withReceipt.map((e, i) => [e.id, "R" + (i + 1)]));
 
@@ -145,7 +146,7 @@ export async function exportPdf(trip) {
   y = H - 132;
 
   const figs = [
-    ["Total shared costs", money(total), 16],
+    ["Total shared costs", money(total) + (unsplitN ? `  (leaves out ${unsplitN} expense${unsplitN === 1 ? "" : "s"} nobody is splitting yet)` : ""), 16],
     ["Expenses", `${expenses.length}  (${withReceipt.length} with receipt${withReceipt.length === 1 ? "" : "s"})`, 11],
     ["Treasurer", t.treasurer_name ? `${t.treasurer_name}${t.treasurer_family_id ? ` (${fam(t.treasurer_family_id)})` : ""}` : "Not assigned", 11],
   ];
@@ -202,9 +203,9 @@ export async function exportPdf(trip) {
   // ---------- family statements ----------
   runningTitle = "Family statements";
   if (y < 300) newPage(); else y -= 10;
-  section("Family statements", "Every expense each family shares, how it was divided, and that family's part of it. An asterisk marks someone who fenced.");
+  section("Family statements", "Every expense each family shares, how it was divided, and that family's part of it. An asterisk marks someone ticked as Fencer.");
   for (const f of families.filter(x => x.kind !== "staff")) {
-    const lines = expenses.filter(e => perExpense[e.id].shares[f.id]);
+    const lines = expenses.filter(e => f.id in perExpense[e.id].shares || String(f.id) in perExpense[e.id].shares);   // a share that rounds to $0.00 is still a share
     const r = rows[f.id];
     need(70);
     rect(M, y - 8, CW, 24, C.goldWash); rect(M, y - 8, 3, 24, C.gold);

@@ -924,12 +924,52 @@ const catOf = e => CATEGORIES[e.category] || CATEGORIES.other;
 // Remember the tag of a family picked on a form, as it was when picked.
 function tagOf(d, id) { const f = S.trip.families.find(x => x.id === Number(id)); if (f) (d.tags ||= {})[id] = f.uid; }
 
+// ---------- an edit rebuilt on the newest version of its expense ----------
+// When someone changed the expense (or the parent's own earlier save landed with its reply
+// lost), the form is rebuilt on the current version, keeping only what the parent changed.
+const SAVED = ["description", "vendor", "date", "category", "basis", "amount_cents", "paid_by", "split", "receipt_key", "receipt_type"];
+const snapOf = x => Object.fromEntries(SAVED.map(k => [k, k === "split" ? JSON.stringify(x.split || {}) : k === "paid_by" ? Number(x.paid_by) || null : x[k] ?? null]));
+// Fields that go together: the kind of cost sets the split, and head counts mean nothing under another split.
+const GROUPS = [["description"], ["vendor"], ["date"], ["amount_cents"], ["paid_by"], ["category", "basis", "split"], ["receipt_key", "receipt_type"]];
+function draftFromExpense(e) {
+  const d = { ...e, category: CATEGORIES[e.category] ? e.category : "other", basis: BASES[e.basis] ? e.basis : "took_part", split: { ...e.split },
+    amount: (e.amount_cents / 100).toFixed(2), catTouched: true, dateTouched: true, tags: {}, base: snapOf(e) };
+  if (d.paid_by) tagOf(d, d.paid_by);
+  for (const fid of Object.keys(d.split)) tagOf(d, fid);
+  return d;
+}
+function mergeOnto(d, cur) {
+  const nd = draftFromExpense(cur), mine = snapOf({ ...d, amount_cents: cents(d.amount) }), base = d.base;
+  for (const g of GROUPS) if (g.some(k => mine[k] !== base[k])) for (const k of g) {
+    if (k === "amount_cents") nd.amount = d.amount;
+    else if (k === "split") { nd.split = { ...d.split }; for (const id of Object.keys(d.split)) if (d.tags?.[id]) nd.tags[id] = d.tags[id]; }
+    else { nd[k] = d[k]; if (k === "paid_by" && d.tags?.[d.paid_by]) nd.tags[d.paid_by] = d.tags[d.paid_by]; }
+  }
+  return nd;
+}
+const KEPT_ON_NEWEST = "This expense was changed since you opened it. Your changes are kept on the newest version: check it, then save.";
+// After a refusal: the trip has just been reloaded. The expense is found by its number and
+// when it was made (numbers can be reused); gone means deleted.
+function rebaseEdit(d, msg = KEPT_ON_NEWEST) {
+  const t = S.trip.tournament, cur = S.trip.expenses.find(x => x.id === d.id && x.created_at === d.created_at);
+  if (!cur) { S.draft = null; dropDraft(); toast("This expense was deleted on another phone."); location.hash = `#/t/${t.id}`; return; }
+  S.draft = mergeOnto(d, cur); keepDraft(); renderEditor(d.id); toast(msg);
+}
+
 function renderEditor(id) {
   const { tournament: t, families, expenses } = S.trip;
   const e = id ? expenses.find(x => x.id === id) : null;
   if (final()) { if (e) return renderExpenseView(e); location.hash = `#/t/${t.id}`; return; }
   if (id && !e) { location.hash = `#/t/${t.id}`; return; }
   if ((!S.draft || S.draft.id !== (id || 0)) && (S.draft = keptDraft(t.id, id || 0))) toast("Picked up where you left off.");
+  // A kept edit whose expense changed since: rebuilt on the newest version; a different
+  // expense on the same number (or a draft from before this was kept) starts afresh.
+  if (S.draft && e && S.draft.id === e.id && (S.draft.created_at !== e.created_at || S.draft.rev !== e.rev)) {
+    const old = S.draft;
+    S.draft = old.created_at === e.created_at && old.base ? mergeOnto(old, e) : null;
+    if (!S.draft) dropDraft();
+    if (old.created_at === e.created_at) toast(S.draft ? KEPT_ON_NEWEST : "This expense changed while you were away. Check it and make your change again.");
+  }
   // A kept draft names its families by number; a number can have gone to another family
   // since (deleted, then a new one added). Keep only the families that are still the same.
   if (S.draft) {
@@ -959,12 +999,10 @@ function renderEditor(id) {
   if (!S.draft || S.draft.id !== (id || 0)) {
     const me = myFamily();
     // A new expense starts as a team meal with nobody ticked: whoever enters it ticks who took part.
-    S.draft = e ? { ...e, category: CATEGORIES[e.category] ? e.category : "other", basis: BASES[e.basis] ? e.basis : "took_part", split: { ...e.split },
-        amount: (e.amount_cents / 100).toFixed(2), catTouched: true, dateTouched: true, tags: {} }
+    S.draft = e ? draftFromExpense(e)
       : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "took_part", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, client_key: crypto.randomUUID(), tags: {} };
     // The families as this form opens with them, so a family replaced on the same number later is caught.
     if (S.draft.paid_by) tagOf(S.draft, S.draft.paid_by);
-    for (const fid of Object.keys(S.draft.split)) tagOf(S.draft, fid);
   }
   const d = S.draft;
   const days = tournamentDays(t.start_date, t.end_date);
@@ -1196,6 +1234,17 @@ function migratePending() {
  } catch {}
 }
 
+// A save they walked away from was refused: a new expense isn't lost, it waits on the phone as
+// "Couldn't send", to open and fix; an edit can't wait that way, so the message says what didn't save.
+function refusedAfterLeaving(t, who, body, d, e) {
+  const label = `${body.description || CATEGORIES[body.category]?.label || "Expense"}, ${money(body.amount_cents)}`;
+  if (!d.id && keepWaiting({ key: body.client_key, trip: t.id, who, at: Date.now(), label, body, refused: e.message })) {
+    if (d.fromWait) dropWaiting(d.fromWait);
+    return toast(`${label} couldn't be saved: ${e.message} It's under Waiting to send on ${t.name}.`);
+  }
+  toast(`Your change to ${label} couldn't be saved: ${e.message}`);
+}
+
 function holdExpense(t, who, body, from) {
   const w = { key: body.client_key, trip: t.id, who, at: Date.now(), label: `${body.description || CATEGORIES[body.category].label}, ${money(body.amount_cents)}`, body };
   if (!keepWaiting(w)) { toast("No signal, and this phone couldn't keep the expense. Try again when you have signal."); return false; }
@@ -1277,6 +1326,7 @@ async function saveExpense() {
   catch (e) {
     if (e instanceof AuthError) return renderLogin();
     if (e.unsure && canWait) { if (holdExpense(t, who, body, d.fromWait) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } else thaw(); return; }
+    if (S.draft !== d && !e.unsure) return refusedAfterLeaving(t, who, body, d, e);
     thaw(); return toast(e.message);
   }
   // What the shares on this form were worked out from: for who took part, the families
@@ -1300,11 +1350,15 @@ async function saveExpense() {
     thaw();
     // No answer: it may have saved. If it can wait, it waits (even if they've moved on).
     if (e.unsure && canWait) { if (holdExpense(t, who, body, d.fromWait) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
-    // A family on the form changed: reload the trip (only if still on this form) and redraw,
-    // which clears the picks whose family changed, so the next save isn't refused again.
+    if (S.draft !== d && !e.unsure) return refusedAfterLeaving(t, who, body, d, e);
+    // A family on the form changed, or the expense itself: reload the trip (only if still on
+    // this form) and redraw. A family change clears the picks whose family changed; an expense
+    // change rebuilds the form on the newest version, keeping what they changed.
+    const here = () => S.draft === d && hashPath() === `#/t/${t.id}/e/${d.id || "new"}`;
     if (e.code === "family_changed" && S.draft === d) {
-      const here = () => S.draft === d && hashPath() === `#/t/${t.id}/e/${d.id || "new"}`;
       try { if (await loadTrip(t.id, here)) renderEditor(d.id || null); } catch {}
+    } else if ((e.code === "expense_changed" || e.code === "expense_deleted") && d.id && S.draft === d) {
+      try { if (await loadTrip(t.id, here)) return rebaseEdit(d); } catch {}
     }
     return toast(e.message);
   }
@@ -1477,7 +1531,9 @@ async function volunteerSheet() {
   });
   if (!v) return;
   const body = v.action === "remove" ? { treasurer_name: "" } : { ...v, treasurer_family_uid: uids[v.treasurer_family_id] };
-  await act(() => api(`/tournaments/${t.id}/treasurer`, { method: "PUT", body }), v.action === "remove" ? "Treasurer removed" : "Saved");
+  // Refused because the trip changed since the sheet opened: the tab catches up by itself.
+  try { await act(() => api(`/tournaments/${t.id}/treasurer`, { method: "PUT", body }), v.action === "remove" ? "Treasurer removed" : "Saved"); }
+  catch (e) { if (!(e instanceof AuthError)) refresh("treasurer").catch(() => {}); return; }
   refresh("treasurer");
 }
 
@@ -1535,7 +1591,7 @@ app.addEventListener("click", async ev => {
       }
       case "remove-family": {
         const f = S.trip.families.find(f => f.id === id);
-        if (!(await confirmSheet(f.kind === "staff" ? `Remove ${esc(famLabel(f))}?` : `Remove the ${esc(f.name)} family?`, f.kind === "staff" ? "They're taken off this trip." : "Everyone in it is removed from this trip too.", "Remove", true))) return;
+        if (!(await confirmSheet(f.kind === "staff" ? `Remove ${esc(famLabel(f))}?` : `Remove the ${esc(f.name)} family?`, f.kind === "staff" ? "They're taken off this trip." : "Everyone in it is removed from this trip too, and the family comes off every expense it was ticked on, so the others' shares of those go up.", "Remove", true))) return;
         await act(() => api(`/families/${id}`, { method: "DELETE" }), "Family removed");
         location.hash = `#/t/${t.id}?tab=families`; return;
       }
@@ -1550,7 +1606,17 @@ app.addEventListener("click", async ev => {
         if (!(await confirmSheet("Delete this expense?", "It's removed for everyone, along with its receipt.", "Delete", true))) return;
         { const seen = S.draft?.id === id ? S.draft : S.trip.expenses.find(x => x.id === id);
           try { await api(`/expenses/${id}`, { method: "DELETE", body: { created_at: seen?.created_at, rev: seen?.rev } }); toast("Deleted"); }
-          catch (e) { if (e instanceof AuthError) return renderLogin(); if (e.status !== 404) { toast(e.message); return; } toast("Deleted"); } }   // 404: a retry of a delete that already went through
+          catch (e) {
+            if (e instanceof AuthError) return renderLogin();
+            // Changed since the form opened: rebuild it on the newest version, to look at before deleting.
+            if (e.code === "expense_changed" && S.draft?.id === id) {
+              const d = S.draft, here = () => S.draft === d && hashPath() === `#/t/${t.id}/e/${id}`;
+              try { if (await loadTrip(t.id, here)) rebaseEdit(d, "This expense was changed since you opened it. Check it before deleting."); } catch { toast(e.message); }
+              return;
+            }
+            if (e.status !== 404 && e.code !== "expense_deleted") { toast(e.message); return; }
+            toast(e.status === 404 ? "Deleted" : e.message);    // 404: a retry of a delete that already went through
+          } }
         dropDraft(); S.draft = null; location.hash = `#/t/${t.id}`; return;
       case "drop-receipt": S.draft.receipt_key = null; S.draft.receipt_type = null; S.draft.aiNote = ""; return drawReceipt();
       case "volunteer": return volunteerSheet();

@@ -26,6 +26,12 @@ class HttpError extends Error {
 }
 // A family named on a form (by number and tag) that isn't that family any more: the
 // phone recognises the code and redraws the form without it.
+// The expense a form was editing changed, or went, since the form opened: the phone reloads
+// and rebuilds the form (keeping what the parent changed), or goes back to the list.
+const expenseChanged = () => new HttpError(409, "This expense was changed since you opened it.", "expense_changed");
+const expenseDeleted = () => new HttpError(409, "This expense was deleted on another phone.", "expense_deleted");
+// A treasurer form drawn for an open trip arriving at a final one, or the reverse.
+const tripChanged = (final: boolean) => new HttpError(409, final ? "This trip was just finalized. Reload to see it." : "This trip changed since you opened this. Reload to see it.", "trip_changed");
 const familyChanged = () => new HttpError(409, "A family on this was removed from the trip. Check who paid and who took part, then save again.", "family_changed");
 // The families an expense names are still the ones its form named, checked in the write
 // itself (a separate read leaves a gap). A family no longer on the trip always fails; a
@@ -547,12 +553,20 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const t = await tournament(env, tid);
     const b = await body(req);
     const notes = str(b.treasurer_notes, 1000);
+    // The form says which kind it is by what it sends: the full form (drawn on an open trip)
+    // always names the treasurer, an empty name meaning "step down"; the payment-details form
+    // (drawn on a final trip) sends only the notes. Each is refused on the other kind of trip,
+    // and the status is checked again in the write.
+    const full = Object.hasOwn(b, "treasurer_name");
     if (t.status === "final") {
-      // Once final the treasurer is fixed; only where-to-send notes can change.
-      await env.DB.prepare("UPDATE tournaments SET treasurer_notes = ? WHERE id = ?").bind(notes, tid).run();
+      if (full) throw tripChanged(true);
+      const u = await env.DB.prepare("UPDATE tournaments SET treasurer_notes = ? WHERE id = ? AND status = 'final' AND deleted_at IS NULL AND treasurer_name IS NOT NULL")
+        .bind(notes, tid).run();
+      if (!u.meta.changes) throw tripChanged(false);
       await log(env, tid, name, "updated the treasurer's payment notes");
       return json({ ok: true });
     }
+    if (!full) throw tripChanged(false);
     const tname = str(b.treasurer_name, 80);
     const fid = b.treasurer_family_id == null || b.treasurer_family_id === "" ? null : Number(b.treasurer_family_id);
     if (fid != null) {
@@ -565,7 +579,10 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const sameFam = fid != null && tname ? " AND (SELECT uid FROM families WHERE id = ? AND tournament_id = ? AND kind = 'family') = ?" : "";
     const u = await env.DB.prepare(`UPDATE tournaments SET treasurer_name = ?, treasurer_family_id = ?, treasurer_notes = ? WHERE id = ? AND status = 'open' AND deleted_at IS NULL${sameFam}`)
       .bind(tname || null, tname ? fid : null, tname ? notes : "", tid, ...(sameFam ? [fid, tid, b.treasurer_family_uid] : [])).run();
-    if (!u.meta.changes) throw sameFam ? stale() : closed();
+    if (!u.meta.changes) {
+      const now2 = await tournament(env, tid);
+      throw now2.status === "final" ? tripChanged(true) : sameFam ? stale() : closed();
+    }
     await log(env, tid, name, tname ? (tname === t.treasurer_name ? "updated the treasurer details" : `set ${tname} as treasurer`) : "removed the treasurer");
     return json({ ok: true });
   }
@@ -593,8 +610,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       await log(env, tid, name, `added ${str(b.role, 40) || "Coach"} ${str(b.name)} to coaches & staff`);
       return json({ id: r.id }, 201);
     }
-    // A family that joins late shares the coach's costs from now on (they follow the
-    // fencers); it isn't in any meal until someone ticks it (see unitsFor in split.js).
+    // A family that joins late counts in the coach's costs at once, on every expense not yet
+    // finalized (they follow the fencers live); it isn't in any meal until someone ticks it.
     await log(env, tid, name, `added the ${str(b.name)} family`);
     return json({ id: r.id }, 201);
   }
@@ -753,24 +770,24 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   if ((m = path.match(/^\/expenses\/(\d+)$/))) {
     const id = Number(m[1]);
     const old = await env.DB.prepare("SELECT * FROM expenses WHERE id = ?").bind(id).first<any>();
-    if (!old) throw new HttpError(404, "No such expense");
+    if (!old) throw Object.assign(new HttpError(404, "No such expense"), { code: "expense_deleted" });
     await openTournament(env, old.tournament_id);
     // Ids can be reused once the newest expense is deleted; the screen names the expense it opened by when it was made.
     const b = method === "GET" ? {} : await body(req).catch(() => ({}));
-    if (b.created_at != null && b.created_at !== old.created_at) throw new HttpError(409, "That expense was deleted on another phone. Reload to see the list.");
+    if (b.created_at != null && b.created_at !== old.created_at) throw expenseDeleted();
     // And the revision it opened: an editor left open can't save over a newer correction.
     const e = method === "PATCH" ? await expenseInput(env, old.tournament_id, b) : null;
     if ((method === "PATCH" || method === "DELETE") && b.rev !== old.rev) {
       // The same edit sent again because its reply was lost: it's already saved.
       const same = e && b.rev === old.rev - 1 && EXPENSE_FIELDS.every(k => (e as any)[k] === old[k]);
       if (same) return json({ ok: true });
-      throw new HttpError(409, "This expense changed after you opened it, on another phone or by an earlier save of yours that went through. Go back and open it again to see it as it is.");
+      throw expenseChanged();
     }
     if (method === "PATCH" && e) {
       // A new receipt must really be there: an editor left open from before someone
       // else replaced the receipt would otherwise point the expense at a deleted file.
       if (e.receipt_key && e.receipt_key !== old.receipt_key && !(await env.RECEIPTS.head(e.receipt_key)))
-        throw new HttpError(409, "That receipt was replaced on another phone. Reload the expense and try again.");
+        throw expenseChanged();               // the receipt was replaced on another phone
       // The payer's tag too, on an edit as on a new expense.
       if (b.paid_by_uid != null) {
         const f = await env.DB.prepare("SELECT uid FROM families WHERE id = ?").bind(e.paid_by).first<any>();
@@ -784,7 +801,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       if (!u.meta.changes) {
         const now2 = await env.DB.prepare("SELECT rev, created_at FROM expenses WHERE id = ?").bind(id).first<any>();
         const open = await env.DB.prepare("SELECT 1 FROM tournaments WHERE id = ? AND status = 'open' AND deleted_at IS NULL").bind(old.tournament_id).first();
-        if (open && now2 && now2.rev === old.rev && now2.created_at === old.created_at) throw familyChanged();
+        if (open && now2 && now2.created_at === old.created_at) throw now2.rev === old.rev ? familyChanged() : expenseChanged();
+        if (open && !now2) throw expenseDeleted();
         throw new HttpError(409, "This expense or the trip just changed on another phone. Reload and try again.");
       }
       if (old.receipt_key !== e.receipt_key) await dropReceipt(env, old.receipt_key);

@@ -158,3 +158,31 @@ ok(r.s === 404 && r.d.route !== "unknown", "a missing trip is a refusal, not an 
   r = await raw(`/families/${R}/people`, "POST", { name: "late", uid: ruid });
   ok([404, 409].includes(r.s), `adding a person to a family just removed is refused, not a server error (${r.s})`);
 }
+// round 12: each treasurer form only works on the trip state it was drawn for; expense refusals carry codes
+{
+  const t9 = (await call("/tournaments", "POST", { name: "R12", start_date: "2028-12-01", end_date: "2028-12-01" })).d.id;
+  const K = (await call(`/tournaments/${t9}/families`, "POST", { name: "Kim" })).d.id; await call(`/families/${K}/people`, "POST", { name: "k", is_fencer: true, fencing_days: ["2028-12-01"] });
+  await call(`/tournaments/${t9}/treasurer`, "PUT", { treasurer_name: "Kay", treasurer_family_id: K, treasurer_notes: "venmo" });
+  let r = await raw(`/tournaments/${t9}/treasurer`, "PUT", { treasurer_notes: "new venmo" });
+  let tt = (await get(t9)).tournament;
+  ok(r.s === 409 && r.d.code === "trip_changed" && tt.treasurer_name === "Kay" && tt.treasurer_notes === "venmo", "a notes-only save on an open trip is refused, and the treasurer stays");
+  await call(`/tournaments/${t9}/expenses`, "POST", { description: "Hotel", category: "coach_stay", basis: "fencer_day", amount_cents: 10000, paid_by: K, split: {} });
+  ok((await call(`/tournaments/${t9}/finalize`, "POST")).s === 200, "finalized");
+  r = await raw(`/tournaments/${t9}/treasurer`, "PUT", { treasurer_notes: "zelle" });
+  ok(r.s === 200 && (await get(t9)).tournament.treasurer_notes === "zelle", "on a final trip, the notes-only save works");
+  r = await raw(`/tournaments/${t9}/treasurer`, "PUT", { treasurer_name: "Lee", treasurer_family_id: "", treasurer_notes: "x" });
+  tt = (await get(t9)).tournament;
+  ok(r.s === 409 && r.d.code === "trip_changed" && /finalized/.test(r.d.error) && tt.treasurer_name === "Kay", "a full treasurer save on a final trip is refused as finalized, not silently half-applied");
+  await call(`/tournaments/${t9}/reopen`, "POST");
+  r = await raw(`/tournaments/${t9}/treasurer`, "PUT", { treasurer_name: "" });
+  tt = (await get(t9)).tournament;
+  ok(r.s === 200 && !tt.treasurer_name && !tt.treasurer_family_id, "stepping down still works, and clears the family");
+  const ex = (await get(t9)).expenses[0];
+  await call(`/expenses/${ex.id}`, "PATCH", { description: "Hotel", category: "coach_stay", basis: "fencer_day", amount_cents: 12000, paid_by: K, split: {} });
+  r = await raw(`/expenses/${ex.id}`, "PATCH", { description: "Hotel 2", category: "coach_stay", basis: "fencer_day", amount_cents: 10000, paid_by: K, split: {}, rev: ex.rev, created_at: ex.created_at });
+  ok(r.s === 409 && r.d.code === "expense_changed", "an edit from before someone else's change is refused with the expense-changed code");
+  r = await raw(`/expenses/${ex.id}`, "PATCH", { description: "Hotel 2", category: "coach_stay", basis: "fencer_day", amount_cents: 10000, paid_by: K, split: {}, rev: ex.rev + 1, created_at: "2000-01-01" });
+  ok(r.s === 409 && r.d.code === "expense_deleted", "an edit of an expense whose number now names another is refused as deleted");
+  r = await raw(`/expenses/999999`, "PATCH", { description: "x", category: "other", basis: "per_fencer", amount_cents: 1, paid_by: K, split: {} });
+  ok(r.s === 404 && r.d.code === "expense_deleted", "an edit of an expense that's gone says so with a code");
+}

@@ -37,7 +37,9 @@ ok((await call(`/tournaments/${t}/finalize`, "POST")).s === 200, "finalize");
 ok((await call(`/tournaments/${t}`, "PATCH", { start_date: D[0] })).s === 409, "a final trip's dates can't change");
 ok((await call(`/tournaments/${t}/families`, "POST", { name: "Late" })).s === 409, "no family can be added to a final trip");
 ok((await call(`/tournaments/${t}`, "DELETE")).s === 409, "a final trip can't be deleted");
-ok((await call(`/tournaments/${t}/treasurer`, "PUT", { treasurer_name: "Other", treasurer_family_id: Bf, treasurer_notes: "n" })).s === 200 && (await get()).tournament.treasurer_family_id === A, "a final trip's treasurer stays put (notes still editable)");
+// (since round 12: a full treasurer form on a final trip is refused; the payment-details form, notes only, works)
+ok((await call(`/tournaments/${t}/treasurer`, "PUT", { treasurer_name: "Other", treasurer_family_id: Bf, treasurer_notes: "n" })).s === 409 && (await get()).tournament.treasurer_family_id === A, "a final trip's treasurer stays put");
+ok((await call(`/tournaments/${t}/treasurer`, "PUT", { treasurer_notes: "n" })).s === 200 && (await get()).tournament.treasurer_notes === "n", "a final trip's payment notes are still editable");
 tr = await get(); const pay = tr.payments[0];
 ok((await call(`/payments/${pay.id}`, "PATCH", { paid: true, family_id: pay.family_id, direction: pay.direction, amount_cents: pay.amount_cents + 1 })).s === 409, "ticking a payment that has since changed is refused");
 ok((await call(`/payments/${pay.id}`, "PATCH", { paid: true, family_id: pay.family_id, direction: pay.direction, amount_cents: pay.amount_cents })).s === 200, "ticking the payment as seen works");

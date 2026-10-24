@@ -28,3 +28,9 @@
 - The PDF: a share that rounds to 0 cents is still listed; the totals line explains an expense nobody is splitting; the fencer mark's note says "ticked as Fencer".
 - The family-removal confirmation says the family comes off every expense it was ticked on.
 - The comment about late families says shares follow the fencers live.
+
+## Pass 2 (peer-pass2-*.md): details only; built as plan v3 with these changes
+- Treasurer: "has a name" means the key is present (Step down sends an empty name and must keep working, and clears the family); the missing-family rule is dropped (no page omits it); the final-trip notes write also checks the trip isn't deleted; after a refusal the tab reloads by itself.
+- Edits: the revision mismatch, the receipt-replaced refusal and the write-time race (trip open, same expense, revision moved) all carry `expense_changed`; deleted cases carry `expense_deleted`, and a retried delete's 404 still counts as done. Kind of cost, split and head counts are re-applied as one unit; the message is neutral ("This expense was changed since you opened it"), since the change may be the parent's own earlier save; the rebuilt form goes through the family-tag check; kept drafts compare creation time as well as the id.
+- A left-then-refused save: also when the first check is refused. An edit doesn't overwrite another kept draft; the message names it.
+- Not in this round: typed text lost when the trip-details or treasurer sheet is refused as out of date (short fields; recorded as LOW).

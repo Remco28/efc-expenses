@@ -533,3 +533,20 @@ Also accepted: the bad-signal reader only read code and didn't cover edits, fami
 Not given rows, and why: a refused waiting item is lost if the phone's storage is cleared, and a deleted-then-resent item comes back (both accepted limits of saving design v4).
 
 **So round 12 had no HIGH, four MEDIUM (rows 1, 2 and the two above), and its MEDIUM fixes mean a round 13 follows.**
+
+### Round 12's fixes: two peer passes, then built
+
+The plan (round12/plan.md) went to two critics and two blind solvers before any code (peer-*.md). They broke its edit fix: keeping the parent's whole version on top of the newer one would have silently undone the other person's changes in fields the parent never touched, the same lost update in a new place. They also found the deleted cases arrive differently than assumed, a replaced receipt would trap the form again, and the treasurer fix opened its own holes (notes written over a new treasurer's, the reverse race). Frank chose: each treasurer form only works on the trip state it was drawn for; a refused edit keeps only the parent's own changes; a save walked away from and refused isn't lost; Back still cancels a new expense. Plan v2 went to a fresh pair (peer-pass2-*.md): details only (Step down must keep working, neutral wording since the change may be the parent's own earlier save, kind/split/head counts as one unit, fewer moving parts), so it was built.
+
+Built: the server tells the two treasurer forms apart by what they send and refuses each on the other kind of trip, rechecking the status in the write (`trip_changed`); Step down still works and clears the family; expense refusals carry `expense_changed` or `expense_deleted`; a refused edit (or a kept edit draft that's behind) is rebuilt on the newest version keeping only the groups of fields the parent changed, found by number and creation time; the editor's Delete gets the same; a save walked away from and refused goes to "Couldn't send" (a new expense) or names what didn't save (an edit); the PDF lists a share that rounds to $0.00, says when the total leaves out an expense nobody is splitting, and says the asterisk means "ticked as Fencer"; removing a family says it comes off every expense it was ticked on.
+
+Checks: every API script (round10.mjs, 51 checks, gained the treasurer forms and the expense codes; round3's treasurer check updated to the new rule) and browser checks: an edit made while another phone changed the amount is rebuilt with the parent's description and the other's amount, and saves with both; a new expense whose save was walked away from and then refused (the trip was finalized meanwhile) is kept under "Waiting to send" as "Couldn't send".
+
+Not in this round (LOW): typed text in the trip-details or treasurer sheet is lost when it's refused as out of date (short fields; the screen now reloads by itself).
+
+**Believed, and wrong:** the edit plan, "keep the parent's values, carry the new revision", as a fix for lost work. It would have caused the lost update it was meant to prevent.
+
+### Mistakes the next author will make
+
+1. A "keep my version" fix for a conflict that silently discards the other person's version of the fields you didn't touch.
+2. Letting a server guess what a request meant from a status read a moment ago, instead of from what the request says.
