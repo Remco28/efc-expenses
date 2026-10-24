@@ -563,6 +563,7 @@ function tabExpenses(el) {
     ${wait.length ? `<div class="card waiting"><h2>Waiting to send</h2>
       ${wait.length ? `<p class="muted small" style="margin-top:-4px">On this phone, not confirmed yet. It may already be on the trip. Sent by itself when there's a signal, and not in the totals until then.</p>` : ""}
       ${wait.map(w => `<div class="xrow"><div class="grow"><div class="what">${esc(w.label)}</div>
+        ${w.body.basis === "took_part" ? `<div class="faint small">${esc(Object.entries(w.body.split || {}).map(([id, n]) => `${famName(id)} ${n}`).join(", "))}</div>` : ""}
         <div class="meta">${w.refused ? `<span class="owe">Couldn't send: ${esc(w.refused)}</span> <button class="link small" data-act="rewait" data-key="${esc(w.key)}">Open it to fix</button>` : `Waiting since ${esc(since(w))}`}</div></div>
         <button class="btn-ghost btn-small" data-act="unwait" data-key="${esc(w.key)}">Remove</button></div>`).join("")}</div>` : ""}
     <div class="card ledger">

@@ -105,3 +105,13 @@ ok(r.s === 404 && r.d.route !== "unknown", "a missing trip is a refusal, not an 
   ok(sb.expenses.length === 5 && meals.length === 2 && meals.every(e => Object.keys(e.split).length >= 2), `the practice trip has its meals ticked (${meals.map(e => JSON.stringify(e.split))})`);
   ok(sb.families.flatMap(f => f.people).filter(p => p.is_fencer).map(p => p.fencing_days.length).join() === "2,1,2", "and its fencers' days");
 }
+// round 11 audit: a retried trip-details save that went through is accepted, not blamed on another phone
+{
+  const t6 = (await call("/tournaments", "POST", { name: "Dates", start_date: "2028-09-01", end_date: "2028-09-03" })).d.id;
+  const first = { name: "Dates", start_date: "2028-09-01", end_date: "2028-09-02", seen_start: "2028-09-01", seen_end: "2028-09-03" };
+  ok((await raw(`/tournaments/${t6}`, "PATCH", first)).s === 200, "the dates change");
+  ok((await raw(`/tournaments/${t6}`, "PATCH", first)).s === 200, "the same save again (its reply lost) is accepted");
+  ok((await raw(`/tournaments/${t6}`, "PATCH", { ...first, end_date: "2028-09-03" })).s === 409, "but new dates from a form opened before still are refused");
+  const tr = await get(t6);
+  ok(typeof tr.fingerprint === "string" && tr.fingerprint.length > 0, "the trip comes with the fingerprint of what it shows");
+}

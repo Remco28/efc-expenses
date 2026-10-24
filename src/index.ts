@@ -166,12 +166,14 @@ async function allowedDays(env: Env, tid: number) {
 
 async function loadTrip(env: Env, tid: number) {
   const t = await tournament(env, tid);
-  const [fam, ppl, exp, pay, act] = await env.DB.batch([
+  const [fam, ppl, exp, pay, act, fp] = await env.DB.batch([
     env.DB.prepare("SELECT * FROM families WHERE tournament_id = ? ORDER BY name COLLATE NOCASE").bind(tid),
     env.DB.prepare("SELECT p.* FROM people p JOIN families f ON f.id = p.family_id WHERE f.tournament_id = ? ORDER BY p.is_fencer DESC, p.id").bind(tid),
     env.DB.prepare("SELECT * FROM expenses WHERE tournament_id = ? ORDER BY date IS NULL, date, id").bind(tid),
     env.DB.prepare("SELECT * FROM payments WHERE tournament_id = ? ORDER BY direction, amount_cents DESC").bind(tid),
     env.DB.prepare("SELECT * FROM activity WHERE tournament_id = ? ORDER BY id DESC LIMIT 50").bind(tid),
+    // In the same batch as the numbers, so it fingerprints exactly what this read shows.
+    env.DB.prepare(`SELECT ${FINGERPRINT_SQL} AS f`).bind(tid, tid, tid, tid),
   ]);
   // A person's fencing days count only while they're a fencer (unticking Fencer keeps them,
   // so ticking it again brings them back). Every screen, the money and finalize read them here.
@@ -180,7 +182,7 @@ async function loadTrip(env: Env, tid: number) {
     ({ ...p, is_fencer: !!p.is_fencer, days: [], fencing_days: p.is_fencer ? JSON.parse(p.fencing_days) : [] }));
   const families = (fam.results as any[]).map(f => ({ ...f, days: [], people: people.filter(p => p.family_id === f.id) }));
   const expenses = (exp.results as any[]).map(e => ({ ...e, split: JSON.parse(e.split) }));
-  return { tournament: t, families, expenses, payments: pay.results, activity: act.results };
+  return { tournament: t, families, expenses, payments: pay.results, activity: act.results, fingerprint: (fp.results[0] as any).f as string };
 }
 
 async function familyIds(env: Env, tid: number) {
@@ -391,7 +393,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
   if ((m = path.match(/^\/tournaments\/(\d+)$/))) {
     const tid = Number(m[1]);
     // The fingerprint of the numbers this screen shows: finalize locks only those.
-    if (method === "GET") { const [trip, fp] = await Promise.all([loadTrip(env, tid), fingerprint(env, tid)]); return json({ ...trip, fingerprint: fp }); }
+    if (method === "GET") return json(await loadTrip(env, tid));
     if (method === "PATCH") {
       const t = await openTournament(env, tid);
       const b = await body(req);
@@ -399,10 +401,11 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       const end = isDate(b.end_date) ? b.end_date : t.end_date;
       if (end < start) throw new HttpError(400, "Check the dates");
       const moved = start !== t.start_date || end !== t.end_date;
-      // A form sending dates names the dates it was opened with; a form opened before
-      // someone else changed them would otherwise put the old ones back.
-      const seenStart = b.start_date == null && b.end_date == null ? t.start_date : b.seen_start;
-      const seenEnd = b.start_date == null && b.end_date == null ? t.end_date : b.seen_end;
+      // A form sending new dates names the dates it was opened with; a form opened before
+      // someone else changed them would otherwise put the old ones back. Dates that are
+      // already the trip's (a retry of a save that went through) put nothing back.
+      const seenStart = !moved ? t.start_date : b.seen_start;
+      const seenEnd = !moved ? t.end_date : b.seen_end;
       if (seenStart !== t.start_date || seenEnd !== t.end_date) throw stale();
       if (moved && tripDays(start, end) > MAX_TRIP_DAYS) throw new HttpError(400, `A trip can be at most ${MAX_TRIP_DAYS} days`);
       // Days outside new dates come off everyone's fencing days (fencers and not), so
@@ -704,8 +707,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (e.receipt_key && !(await env.RECEIPTS.head(e.receipt_key))) throw new HttpError(409, "That receipt upload has expired. Add the photo again.");
     const r = await env.DB.prepare(
       `INSERT INTO expenses (tournament_id, description, vendor, date, category, basis, amount_cents, paid_by, split, receipt_key, receipt_type, created_at, created_by, client_key)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${OPEN} ON CONFLICT DO NOTHING RETURNING id`)
-      .bind(tid, e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, key, tid).first<any>();
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${OPEN} AND NOT EXISTS (SELECT 1 FROM json_each(?) j WHERE j.key NOT IN (SELECT CAST(id AS TEXT) FROM families WHERE tournament_id = ?)) ON CONFLICT DO NOTHING RETURNING id`)
+      .bind(tid, e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, key, tid, e.split, tid).first<any>();
     if (!r && key) {                       // the same save, landing twice at once
       const again = await env.DB.prepare("SELECT id FROM expenses WHERE client_key = ? AND tournament_id = ?").bind(key, tid).first<any>();
       if (again) return json({ id: again.id, already: true, same: true }, 200);
@@ -737,8 +740,8 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
         throw new HttpError(409, "That receipt was replaced on another phone. Reload the expense and try again.");
       const u = await env.DB.prepare(
         `UPDATE expenses SET description = ?, vendor = ?, date = ?, category = ?, basis = ?, amount_cents = ?, paid_by = ?, split = ?,
-         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ?, rev = rev + 1 WHERE id = ? AND created_at = ? AND rev = ? AND ${OPEN}`)
-        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id, old.created_at, old.rev, old.tournament_id).run();
+         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ?, rev = rev + 1 WHERE id = ? AND created_at = ? AND rev = ? AND ${OPEN} AND NOT EXISTS (SELECT 1 FROM json_each(?) j WHERE j.key NOT IN (SELECT CAST(id AS TEXT) FROM families WHERE tournament_id = ?))`)
+        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id, old.created_at, old.rev, old.tournament_id, e.split, old.tournament_id).run();
       if (!u.meta.changes) throw new HttpError(409, "This expense or the trip just changed on another phone. Reload and try again.");
       if (old.receipt_key !== e.receipt_key) await dropReceipt(env, old.receipt_key);
       await log(env, old.tournament_id, name, `edited ${e.description}`);

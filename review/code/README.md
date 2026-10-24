@@ -451,3 +451,23 @@ Reviewed 60fcc7d (the rebuild, plus Frank's Volunteer fix found while testing: t
 
 1. Deciding a default that moves money without asking the owner, because it looks like a detail.
 2. Removing dead code by hand and leaving one reference behind; only a run of the page finds it.
+
+### The disposition audit of round 11, and our response
+
+Report: round11/disposition-auditor-sonnet.md. Accepted: the round-10 rulings were applied to the new finding (row 1) and not to the old classes when they came back.
+
+| Row | Was | Now | Why |
+|---|---|---|---|
+| 5 (Fencer off and on gives a no-days fencer every day) | LOW | HIGH | The same rule as row 1 on its second path, a silent wrong share; "gone with row 1" said why it was fixed, not how much it mattered. Round 10's mistake 1 again |
+| 4 ("Open it to fix" ticks a family on a reused number) | LOW | MEDIUM | Same cause as row 2, and it can charge a family that didn't go; it was fixed by comparing the tags the waiting expense was saved with, not the trip's current ones |
+| 9 (a family removed while a meal ticking it is saved) | LOW | MEDIUM | "Wrong only in a rare timing" is the scale's MEDIUM (our own round-10 ruling); the share is absorbed silently unless it was the only family ticked |
+| 8 (a retried trip-details save blames another phone) | LOW, not fixed | LOW, fixed | The reason given was false: the server can see the dates are already the trip's. Same class as round 10 row 6 |
+| new: the trip screen read its numbers and their fingerprint in two separate reads | (not rated by two readers) | MEDIUM | "Finalize locks numbers the treasurer hadn't seen", the class rated HIGH in round 9; round 10's fix was not complete |
+| 11 (waiting expenses show only description and amount) | not a finding | LOW, fixed | Head counts are hand-set; the card now shows who's ticked ("Adams 2, Baker 1") |
+| 1 | HIGH | HIGH | Kept, but on the scale's terms (realistic, a wrong share, nobody told), not "my own default" |
+
+Fixed after the audit: the fingerprint is read in the same database batch as the numbers it describes; an expense write refuses, in the same statement, a split naming a family no longer on the trip; a trip-details save whose dates are already the trip's is accepted; the waiting card shows a meal's head counts (round10.mjs and a browser check).
+
+Not given rows, and why: "1.250" read as $1.25 (US parents write 1,250; LOW, left); a waiting expense refused after finalize shows only on its payer's phone (accepted in saving design v4 and by Frank); five scripts crashed in the fix auditor's copy because its fresh database had no practice trip (the scripts expect trip 50 to be the practice trip, as in our test database; noted in briefs/README.md).
+
+**So round 11 had two HIGH findings (rows 1 and 5), and a round 12 follows.**
