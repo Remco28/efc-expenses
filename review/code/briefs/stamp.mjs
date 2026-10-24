@@ -14,6 +14,12 @@ export async function stamp(B, cookie, p, m, b) {
     return t[2] ? { ticked: d.payments.filter(x => x.paid_at).length, ...(b || {}) }
       : { seen_start: d.tournament.start_date, seen_end: d.tournament.end_date, ...(b || {}) };
   }
+  // The treasurer's family is named by its tag too, as the app's sheet does.
+  const tr = /^\/tournaments\/(\d+)\/treasurer$/.exec(p);
+  if (tr && m === "PUT" && b && b.treasurer_family_id != null && b.treasurer_family_uid === undefined) {
+    const d = await (await fetch(`${B}/tournaments/${tr[1]}`, H)).json();
+    return { ...b, treasurer_family_uid: d.families?.find(f => f.id === Number(b.treasurer_family_id))?.uid };
+  }
   // Expenses written for the old splits (from before who-took-part) become the new ones:
   // an untouched per-person or per-family split ticks every family, one person each.
   const ex = /^\/tournaments\/(\d+)\/expenses$/.exec(p) || /^\/expenses\/(\d+)$/.exec(p);

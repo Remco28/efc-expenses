@@ -133,3 +133,28 @@ ok(r.s === 404 && r.d.route !== "unknown", "a missing trip is a refusal, not an 
   const tr = await get(t7);
   ok(tr.tournament.id === t7 && typeof tr.fingerprint === "string", "the trip row comes with its fingerprint");
 }
+// outside review, plan v3: family tags in the write, on edits, and for the treasurer
+{
+  const t8 = (await call("/tournaments", "POST", { name: "Tags v3", start_date: "2028-11-01", end_date: "2028-11-01" })).d.id;
+  const P = (await call(`/tournaments/${t8}/families`, "POST", { name: "Park" })).d.id; await call(`/families/${P}/people`, "POST", { name: "p" });
+  const Q = (await call(`/tournaments/${t8}/families`, "POST", { name: "Quinn" })).d.id; await call(`/families/${Q}/people`, "POST", { name: "q" });
+  let fams = (await get(t8)).families, uid = id => fams.find(f => f.id === id).uid;
+  let r = await raw(`/tournaments/${t8}/expenses`, "POST", { description: "Dinner", category: "meal", basis: "took_part", amount_cents: 2000, paid_by: P, split: { [Q]: 1 }, split_uids: { [Q]: "0000000000000000" }, paid_by_uid: uid(P) });
+  ok(r.s === 409 && r.d.code === "family_changed", "a meal naming a family by a tag that isn't theirs is refused with the family-changed code");
+  r = await raw(`/tournaments/${t8}/expenses`, "POST", { description: "Dinner", category: "meal", basis: "took_part", amount_cents: 2000, paid_by: P, split: { [Q]: 1 }, split_uids: { [Q]: uid(Q) }, paid_by_uid: uid(P) });
+  ok(r.s === 201, "with the right tags it's added");
+  const ex = (await get(t8)).expenses[0];
+  r = await raw(`/expenses/${ex.id}`, "PATCH", { description: "Dinner", category: "meal", basis: "took_part", amount_cents: 2500, paid_by: Q, split: { [Q]: 1 }, paid_by_uid: "0000000000000000", rev: ex.rev, created_at: ex.created_at });
+  ok(r.s === 409 && r.d.code === "family_changed", "an edit naming the payer by a wrong tag is refused");
+  r = await raw(`/tournaments/${t8}/treasurer`, "PUT", { treasurer_name: "Pat", treasurer_family_id: P, treasurer_family_uid: "0000000000000000" });
+  ok(r.s === 409, "a treasurer's family named by a wrong tag is refused");
+  r = await raw(`/tournaments/${t8}/treasurer`, "PUT", { treasurer_name: "Pat", treasurer_family_id: Q, treasurer_family_uid: uid(Q) });
+  ok(r.s === 200, "with the right tag it's set");
+  r = await call(`/families/${Q}`, "DELETE");
+  ok(r.s === 409 && /treasurer/.test(r.d.error), "the treasurer's family can't be removed");
+  const R = (await call(`/tournaments/${t8}/families`, "POST", { name: "Ross" })).d.id;
+  const ruid = (await get(t8)).families.find(f => f.id === R).uid;
+  await call(`/families/${R}`, "DELETE");
+  r = await raw(`/families/${R}/people`, "POST", { name: "late", uid: ruid });
+  ok([404, 409].includes(r.s), `adding a person to a family just removed is refused, not a server error (${r.s})`);
+}

@@ -22,7 +22,21 @@ const MAX_RECEIPT_BYTES = 10 * 1024 * 1024;
 const COOKIE = "efc_access";
 
 class HttpError extends Error {
-  constructor(public status: number, message: string) { super(message); }
+  constructor(public status: number, message: string, public code?: string) { super(message); }
+}
+// A family named on a form (by number and tag) that isn't that family any more: the
+// phone recognises the code and redraws the form without it.
+const familyChanged = () => new HttpError(409, "A family on this was removed from the trip. Check who paid and who took part, then save again.", "family_changed");
+// The families an expense names are still the ones its form named, checked in the write
+// itself (a separate read leaves a gap). A family no longer on the trip always fails; a
+// tag is checked where the phone sent one (an older page sends none).
+function familiesStill(split: string, uids: any, paid: number, paidUid: any, tid: number) {
+  const cur = "(SELECT uid FROM families WHERE id = CAST(j.key AS INTEGER) AND tournament_id = ?)";
+  return {
+    sql: `NOT EXISTS (SELECT 1 FROM json_each(?) j WHERE ${cur} IS NULL OR ${cur} IS NOT COALESCE(json_extract(?, '$."' || j.key || '"'), ${cur}))
+      AND (? IS NULL OR (SELECT uid FROM families WHERE id = ? AND tournament_id = ?) = ?)`,
+    binds: [split, tid, tid, JSON.stringify(uids && typeof uids === "object" ? uids : {}), tid, paidUid ?? null, paid, tid, paidUid ?? null],
+  };
 }
 
 const json = (data: unknown, status = 200, headers: Record<string, string> = {}) =>
@@ -227,7 +241,7 @@ async function expenseInput(env: Env, tid: number, b: any) {
       if (v == null || n === 0) continue;
       if (!Number.isInteger(n) || n < 0 || n > 50) throw new HttpError(400, "A head count is a whole number from 1 to 50");
       if (!ids.has(Number(k)) || (tags && famRows.find(f => f.id === Number(k))?.uid !== tags[k]))
-        throw new HttpError(409, "A family ticked on this was removed from the trip. Check who took part, then save again.");
+        throw familyChanged();
       split[k] = n;
     }
     if (!Object.keys(split).length) throw new HttpError(400, "Tick who took part");
@@ -460,7 +474,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     // isn't written yet is still caught. (A screen from before this check sends none.)
     if (seenFp != null && seenFp !== snap) throw new HttpError(409, "Something on this trip changed since your screen loaded. Look over the numbers, then finalize again.");
     const trip = await loadTrip(env, tid);
-    if ((await fingerprint(env, tid)) !== snap) throw new HttpError(409, "Someone changed the trip while you were finalizing. Check it and finalize again.");
+    if (trip.fingerprint !== snap) throw new HttpError(409, "Someone changed the trip while you were finalizing. Check it and finalize again.");
     const t = trip.tournament;                       // read inside the snapshot, treasurer included
     if (!t.treasurer_name) throw new HttpError(409, "Someone needs to be the treasurer before the trip can be finalized");
     const { rows, perExpense } = balances(trip.expenses, trip.families);
@@ -542,12 +556,16 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     const tname = str(b.treasurer_name, 80);
     const fid = b.treasurer_family_id == null || b.treasurer_family_id === "" ? null : Number(b.treasurer_family_id);
     if (fid != null) {
-      const fam = await env.DB.prepare("SELECT kind FROM families WHERE id = ? AND tournament_id = ?").bind(fid, tid).first<any>();
+      const fam = await env.DB.prepare("SELECT kind, uid FROM families WHERE id = ? AND tournament_id = ?").bind(fid, tid).first<any>();
       if (!fam || fam.kind !== "family") throw new HttpError(400, "Pick a family on this trip");
+      // Named by its tag as it was when the form showed it: a family deleted and replaced on
+      // that number since isn't made the treasurer's.
+      if (tname && b.treasurer_family_uid !== fam.uid) throw stale();
     }
-    const u = await env.DB.prepare("UPDATE tournaments SET treasurer_name = ?, treasurer_family_id = ?, treasurer_notes = ? WHERE id = ? AND status = 'open' AND deleted_at IS NULL")
-      .bind(tname || null, tname ? fid : null, tname ? notes : "", tid).run();
-    if (!u.meta.changes) throw closed();
+    const sameFam = fid != null && tname ? " AND (SELECT uid FROM families WHERE id = ? AND tournament_id = ? AND kind = 'family') = ?" : "";
+    const u = await env.DB.prepare(`UPDATE tournaments SET treasurer_name = ?, treasurer_family_id = ?, treasurer_notes = ? WHERE id = ? AND status = 'open' AND deleted_at IS NULL${sameFam}`)
+      .bind(tname || null, tname ? fid : null, tname ? notes : "", tid, ...(sameFam ? [fid, tid, b.treasurer_family_uid] : [])).run();
+    if (!u.meta.changes) throw sameFam ? stale() : closed();
     await log(env, tid, name, tname ? (tname === t.treasurer_name ? "updated the treasurer details" : `set ${tname} as treasurer`) : "removed the treasurer");
     return json({ ok: true });
   }
@@ -586,6 +604,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     // Ids can be reused after a delete, so a change names the family it saw by its tag.
     const b = method === "PATCH" || method === "DELETE" ? await body(req).catch(() => ({})) : {};
     const f = await env.DB.prepare("SELECT * FROM families WHERE id = ?").bind(fid).first<any>();
+    if (!f) throw stale();                     // removed a moment ago
     if ((method === "PATCH" || method === "DELETE") && b.uid !== f.uid) throw stale();
     if (method === "PATCH") {
       if (b.pay_notes != null && str(b.pay_notes, 300) !== f.pay_notes) {
@@ -608,14 +627,16 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (method === "DELETE") {
       const paid = await env.DB.prepare("SELECT COUNT(*) AS n FROM expenses WHERE paid_by = ?").bind(fid).first<any>();
       if (paid.n > 0) throw new HttpError(409, "This family paid for an expense. Change who paid first.");
+      const trea = await env.DB.prepare("SELECT 1 FROM tournaments WHERE id = ? AND treasurer_family_id = ?").bind(tid, fid).first();
+      if (trea) throw new HttpError(409, "This is the treasurer's family. Change the treasurer's family first.");
       // Each expense's split loses this family as it stands now, so an edit landing meanwhile is kept.
-      const can = `NOT EXISTS (SELECT 1 FROM expenses WHERE paid_by = ?1) AND ${OPEN3} AND (SELECT uid FROM families WHERE id = ?1) = ?4`;
+      const can = `NOT EXISTS (SELECT 1 FROM expenses WHERE paid_by = ?1) AND NOT EXISTS (SELECT 1 FROM tournaments WHERE id = ?3 AND treasurer_family_id = ?1) AND ${OPEN3} AND (SELECT uid FROM families WHERE id = ?1) = ?4`;
       const res = await env.DB.batch([
         // ?2 is the family id as text: the JSON key, not a number.
         env.DB.prepare(`UPDATE expenses SET split = json_remove(split, '$."' || ?2 || '"'), rev = rev + 1 WHERE tournament_id = ?3 AND json_type(split, '$."' || ?2 || '"') IS NOT NULL AND ${can}`).bind(fid, String(fid), tid, f.uid),
         env.DB.prepare(`DELETE FROM families WHERE id = ?1 AND ${can}`).bind(fid, null, tid, f.uid),
       ]);
-      if (!res[1].meta.changes) throw new HttpError(409, "This family paid for an expense or the trip was just finalized. Reload and check.");
+      if (!res[1].meta.changes) throw new HttpError(409, "This family paid for an expense, became the treasurer's family, or the trip was just finalized. Reload and check.");
       await log(env, tid, name, `removed the ${f.name} family`);
       return json({ ok: true });
     }
@@ -629,7 +650,7 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     if (made) return json({ id: made.id, already: true }, 200);
     await openTournament(env, tid);
     const fam = await env.DB.prepare("SELECT uid FROM families WHERE id = ?").bind(fid).first<any>();
-    if (b.uid !== fam.uid) throw stale();
+    if (!fam || b.uid !== fam.uid) throw stale();
     if (!str(b.name)) throw new HttpError(400, "Give the person a name");
     const all = await allowedDays(env, tid);
     const fencer = !!b.is_fencer;
@@ -710,18 +731,22 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
     // Family numbers can be reused after a delete: an expense sent late names its payer's tag too.
     if (b.paid_by_uid != null) {
       const f = await env.DB.prepare("SELECT uid FROM families WHERE id = ?").bind(e.paid_by).first<any>();
-      if (f?.uid !== b.paid_by_uid) throw new HttpError(409, "The family that paid was removed from the trip.");
+      if (f?.uid !== b.paid_by_uid) throw familyChanged();
     }
     if (e.receipt_key && !(await env.RECEIPTS.head(e.receipt_key))) throw new HttpError(409, "That receipt upload has expired. Add the photo again.");
+    const still = familiesStill(e.split, b.split_uids, e.paid_by, b.paid_by_uid, tid);
     const r = await env.DB.prepare(
       `INSERT INTO expenses (tournament_id, description, vendor, date, category, basis, amount_cents, paid_by, split, receipt_key, receipt_type, created_at, created_by, client_key)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${OPEN} AND NOT EXISTS (SELECT 1 FROM json_each(?) j WHERE j.key NOT IN (SELECT CAST(id AS TEXT) FROM families WHERE tournament_id = ?)) ON CONFLICT DO NOTHING RETURNING id`)
-      .bind(tid, e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, key, tid, e.split, tid).first<any>();
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${OPEN} AND ${still.sql} ON CONFLICT DO NOTHING RETURNING id`)
+      .bind(tid, e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, key, tid, ...still.binds).first<any>();
     if (!r && key) {                       // the same save, landing twice at once
       const again = await env.DB.prepare("SELECT id FROM expenses WHERE client_key = ? AND tournament_id = ?").bind(key, tid).first<any>();
       if (again) return json({ id: again.id, already: true, same: true }, 200);
     }
-    if (!r) throw closed();
+    if (!r) {                              // refused: a closed trip, or a family that changed
+      const open = await env.DB.prepare("SELECT 1 FROM tournaments WHERE id = ? AND status = 'open' AND deleted_at IS NULL").bind(tid).first();
+      throw open ? familyChanged() : closed();
+    }
     await log(env, tid, name, `added ${e.description}, $${(e.amount_cents / 100).toFixed(2)}`);
     return json({ id: r.id }, 201);
   }
@@ -746,11 +771,22 @@ async function api(req: Request, env: Env, url: URL): Promise<Response> {
       // else replaced the receipt would otherwise point the expense at a deleted file.
       if (e.receipt_key && e.receipt_key !== old.receipt_key && !(await env.RECEIPTS.head(e.receipt_key)))
         throw new HttpError(409, "That receipt was replaced on another phone. Reload the expense and try again.");
+      // The payer's tag too, on an edit as on a new expense.
+      if (b.paid_by_uid != null) {
+        const f = await env.DB.prepare("SELECT uid FROM families WHERE id = ?").bind(e.paid_by).first<any>();
+        if (f?.uid !== b.paid_by_uid) throw familyChanged();
+      }
+      const still = familiesStill(e.split, b.split_uids, e.paid_by, b.paid_by_uid, old.tournament_id);
       const u = await env.DB.prepare(
         `UPDATE expenses SET description = ?, vendor = ?, date = ?, category = ?, basis = ?, amount_cents = ?, paid_by = ?, split = ?,
-         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ?, rev = rev + 1 WHERE id = ? AND created_at = ? AND rev = ? AND ${OPEN} AND NOT EXISTS (SELECT 1 FROM json_each(?) j WHERE j.key NOT IN (SELECT CAST(id AS TEXT) FROM families WHERE tournament_id = ?))`)
-        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id, old.created_at, old.rev, old.tournament_id, e.split, old.tournament_id).run();
-      if (!u.meta.changes) throw new HttpError(409, "This expense or the trip just changed on another phone. Reload and try again.");
+         receipt_key = ?, receipt_type = ?, updated_at = ?, updated_by = ?, rev = rev + 1 WHERE id = ? AND created_at = ? AND rev = ? AND ${OPEN} AND ${still.sql}`)
+        .bind(e.description, e.vendor, e.date, e.category, e.basis, e.amount_cents, e.paid_by, e.split, e.receipt_key, e.receipt_type, now(), name, id, old.created_at, old.rev, old.tournament_id, ...still.binds).run();
+      if (!u.meta.changes) {
+        const now2 = await env.DB.prepare("SELECT rev, created_at FROM expenses WHERE id = ?").bind(id).first<any>();
+        const open = await env.DB.prepare("SELECT 1 FROM tournaments WHERE id = ? AND status = 'open' AND deleted_at IS NULL").bind(old.tournament_id).first();
+        if (open && now2 && now2.rev === old.rev && now2.created_at === old.created_at) throw familyChanged();
+        throw new HttpError(409, "This expense or the trip just changed on another phone. Reload and try again.");
+      }
       if (old.receipt_key !== e.receipt_key) await dropReceipt(env, old.receipt_key);
       await log(env, old.tournament_id, name, `edited ${e.description}`);
       return json({ ok: true });
@@ -802,7 +838,7 @@ export default {
     try {
       return await api(req, env, url);
     } catch (err) {
-      if (err instanceof HttpError) return json({ error: err.message }, err.status);
+      if (err instanceof HttpError) return json({ error: err.message, ...(err.code && { code: err.code }) }, err.status);
       if (err instanceof Anthropic.APIError) {
         console.error("Claude API error", env.RECEIPT_MODEL || DEFAULT_RECEIPT_MODEL, err.status, err.message);
         return json({ error: "Couldn't read that receipt right now. Enter it by hand." }, 502);

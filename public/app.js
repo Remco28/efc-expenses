@@ -79,8 +79,8 @@ const unsure = reads => Object.assign(new Error(reads ? "No connection. Check yo
 
 // The name shown next to a change: with "(Coach)" for staff on this trip.
 function whoNow() {
-  const me = S.trip && S.trip.families.find(f => f.id === Number(load(`efc-fam-${S.trip.tournament.id}`)));
-  return me?.kind === "staff" && S.name ? `${S.name} (${me.role || "Coach"})` : S.name;
+  const me = S.trip && myFamily();               // by number and tag, like the "your family" card
+  return me && me !== "none" && me.kind === "staff" && S.name ? `${S.name} (${me.role || "Coach"})` : S.name;
 }
 
 async function api(path, opts = {}) {
@@ -114,7 +114,7 @@ async function api(path, opts = {}) {
     && res.status < 500 && res.status !== 429 && data.route !== "unknown";
   if (!answered) throw unsure(reads);
   if (adds) forgetAddKey(slot);         // the server answered: whatever it said, there's no doubt left
-  if (!res.ok) throw Object.assign(new Error(data.error), { status: res.status });
+  if (!res.ok) throw Object.assign(new Error(data.error), { status: res.status, code: data.code });
   return data;
 }
 
@@ -314,6 +314,7 @@ function bar({ back, title, sub, right = "" }) {
 
 // ---------- sign-in ----------
 function renderLogin() {
+  app.inert = false;                              // a save frozen when the login expired
   app.innerHTML = `<div class="wrap narrow"><div class="hero">${MARK}<h1>Elite FC Trip Expenses</h1><p>Shared costs for team travel, split fairly.</p></div>
     <form class="card" id="login">
       <label class="f" for="code" style="margin-top:0">Team access code</label>
@@ -332,6 +333,7 @@ function renderLogin() {
 }
 
 function renderName() {
+  app.inert = false;
   app.innerHTML = `<div class="wrap narrow"><div class="hero">${MARK}<h1>Welcome</h1><p>One quick question before you start.</p></div>
     <form class="card" id="nm">
       <label class="f" for="name" style="margin-top:0">What's your name?</label>
@@ -789,6 +791,7 @@ let famQueue = Promise.resolve(), famPending = 0, famFailed = false;
 const hashPath = () => location.hash.split("?")[0];
 const onFamily = (tid, fid) => hashPath() === `#/t/${tid}/f/${fid}`;
 function famSave(fid, call, msg = "Saved", focusAfter) {
+  const tid0 = S.trip.tournament.id;              // the trip this save belongs to, whatever loads meanwhile
   const st = () => document.getElementById("savestate");
   if (st()) st().textContent = "Saving…";
   famPending++;
@@ -798,9 +801,9 @@ function famSave(fid, call, msg = "Saved", focusAfter) {
     const failed = famFailed; famFailed = false;
     // If they've already left this screen (tapped Done or Back while a save was
     // still going), don't drag them back: the new screen loads fresh data itself.
-    const here = () => onFamily(S.trip.tournament.id, fid);
+    const here = () => onFamily(tid0, fid);
     if (!here()) return;
-    if (!(await loadTrip(S.trip.tournament.id, here))) return;
+    if (!(await loadTrip(tid0, here))) return;
     // Text not yet saved (a field still being typed in, the new person's name)
     // survives the redraw. Read just before it, so nothing typed meanwhile is lost.
     // Only text not yet sent survives the redraw: the field they're typing in (its
@@ -897,13 +900,14 @@ function renderFencing() {
 // Taps save one after another; after the last, the screen shows what the trip now says.
 let fenceQueue = Promise.resolve(), fencePending = 0;
 function fencingSave(call) {
+  const tid0 = S.trip.tournament.id;
   const st = () => document.getElementById("savestate");
   if (st()) st().textContent = "Saving…";
   fencePending++;
   fenceQueue = fenceQueue.then(() => act(call)).catch(() => {}).then(async () => {
     if (--fencePending) return;
-    const here = () => hashPath() === `#/t/${S.trip.tournament.id}/fencing`;
-    try { if (here() && await loadTrip(S.trip.tournament.id, here)) { renderFencing(); if (st()) st().textContent = "✓ Saved"; } }
+    const here = () => hashPath() === `#/t/${tid0}/fencing`;
+    try { if (here() && await loadTrip(tid0, here)) { renderFencing(); if (st()) st().textContent = "✓ Saved"; } }
     catch (e) { if (st()) st().textContent = ""; }
   });
   return fenceQueue;
@@ -928,15 +932,25 @@ function renderEditor(id) {
   if ((!S.draft || S.draft.id !== (id || 0)) && (S.draft = keptDraft(t.id, id || 0))) toast("Picked up where you left off.");
   // A kept draft names its families by number; a number can have gone to another family
   // since (deleted, then a new one added). Keep only the families that are still the same.
-  if (S.draft && !S.draft.id) {
-    // A pick without its tag (a draft from before tags were kept) can't be checked, so it's cleared.
-    const d0 = S.draft, same = id => !!d0.tags?.[id] && S.trip.families.find(f => f.id === Number(id))?.uid === d0.tags[id];
-    const gone = [...Object.keys(d0.split || {}), ...(d0.paid_by ? [String(d0.paid_by)] : [])].filter(id => !same(id));
-    d0.tags ||= {};
-    if (gone.length) {
-      for (const id of gone) delete d0.split[id];
-      if (d0.paid_by && !same(d0.paid_by)) d0.paid_by = "";
-      toast("Some families on this expense changed since it was started. Check who paid and who took part.");
+  if (S.draft) {
+    const d0 = S.draft;
+    const picks = [...Object.keys(d0.split || {}), ...(d0.paid_by ? [String(d0.paid_by)] : [])];
+    if (!d0.tags && d0.id) {
+      // An edit kept from before tags were kept: its families are the saved expense's, which a
+      // removed family's revision bump already protects. Tag them as they are.
+      d0.tags = {}; for (const id of picks) tagOf(d0, id);
+    } else if (!d0.tags) {
+      // A new expense kept from before tags were kept can't be checked: its picks are cleared.
+      d0.tags = {};
+      if (picks.length) { d0.split = {}; d0.paid_by = ""; toast("This expense was started before an update. Check who paid and who took part."); }
+    } else {
+      const same = id => !!d0.tags[id] && S.trip.families.find(f => f.id === Number(id))?.uid === d0.tags[id];
+      const gone = picks.filter(id => !same(id));
+      if (gone.length) {
+        for (const id of gone) delete d0.split[id];
+        if (d0.paid_by && !same(d0.paid_by)) d0.paid_by = "";
+        toast("Some families on this expense changed since it was started. Check who paid and who took part.");
+      }
     }
   }
   // A draft kept from before the three splits takes today's kinds.
@@ -946,9 +960,11 @@ function renderEditor(id) {
     const me = myFamily();
     // A new expense starts as a team meal with nobody ticked: whoever enters it ticks who took part.
     S.draft = e ? { ...e, category: CATEGORIES[e.category] ? e.category : "other", basis: BASES[e.basis] ? e.basis : "took_part", split: { ...e.split },
-        amount: (e.amount_cents / 100).toFixed(2), catTouched: true, dateTouched: true }
+        amount: (e.amount_cents / 100).toFixed(2), catTouched: true, dateTouched: true, tags: {} }
       : { id: 0, description: "", vendor: "", date: null, category: "meal", basis: "took_part", amount: "", paid_by: me && me !== "none" ? me.id : "", split: {}, receipt_key: null, receipt_type: null, client_key: crypto.randomUUID(), tags: {} };
-    if (!e && S.draft.paid_by) tagOf(S.draft, S.draft.paid_by);
+    // The families as this form opens with them, so a family replaced on the same number later is caught.
+    if (S.draft.paid_by) tagOf(S.draft, S.draft.paid_by);
+    for (const fid of Object.keys(S.draft.split)) tagOf(S.draft, fid);
   }
   const d = S.draft;
   const days = tournamentDays(t.start_date, t.end_date);
@@ -1243,14 +1259,14 @@ async function saveExpense() {
     amount_cents, paid_by: Number(d.paid_by), split: d.split, receipt_key: d.receipt_key, receipt_type: d.receipt_type, created_at: d.created_at, rev: d.rev, client_key: d.client_key,
     // Family numbers can be reused after a delete, so the families are named by the tags they
     // had when they were picked: a replacement family on the same number is refused, not charged.
-    ...(!d.id && (d.tags?.[d.paid_by] || payer?.uid) && { paid_by_uid: d.tags?.[d.paid_by] || payer.uid }),
+    ...((d.tags?.[d.paid_by] || payer?.uid) && { paid_by_uid: d.tags?.[d.paid_by] || payer.uid }),
     ...(d.basis === "took_part" && { split_uids: Object.fromEntries(Object.keys(d.split).map(id => [id, d.tags?.[id] || S.trip.families.find(f => f.id === Number(id))?.uid])) }) };
   // A new expense can wait on the phone for a signal; an edit needs one.
   const canWait = !d.id, who = whoNow();
   // The form is frozen from here until the save is settled: a change made while it sends,
   // including during the check below, would otherwise be dropped from what is saved.
   // Moving to another screen unfreezes it (see show()).
-  const btn = document.getElementById("save"), label = btn.innerHTML;
+  const btn = document.getElementById("save"), label = btn.innerHTML, trip0 = S.trip;
   btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Saving…`;
   app.inert = true;
   const thaw = () => { if (S.draft === d) { app.inert = false; btn.disabled = false; btn.innerHTML = label; } };
@@ -1267,8 +1283,11 @@ async function saveExpense() {
   // ticked; otherwise the fencers and their fencing days.
   const whoIs = tr => JSON.stringify(d.basis === "took_part" ? Object.keys(d.split).map(id => [id, tr.families.find(f => f.id === Number(id))?.uid ?? null])
     : tr.families.filter(f => f.kind !== "staff").map(f => [f.id, f.people.filter(p => p.is_fencer).map(p => [p.id, p.fencing_days])]));
-  if (S.draft !== d) return;
-  if (whoIs(fresh) !== whoIs(S.trip)) {
+  // They pressed Save, so if they've left the form meanwhile the save still goes, unchecked
+  // here (the server still checks every family's tag). Otherwise, compare with the trip the
+  // form was worked out on.
+  const left = S.draft !== d;
+  if (!left && whoIs(fresh) !== whoIs(trip0)) {
     thaw();
     S.trip = fresh;
     renderEditor(d.id || null);
@@ -1281,11 +1300,19 @@ async function saveExpense() {
     thaw();
     // No answer: it may have saved. If it can wait, it waits (even if they've moved on).
     if (e.unsure && canWait) { if (holdExpense(t, who, body, d.fromWait) && S.draft === d) { S.draft = null; dropDraft(); location.hash = `#/t/${t.id}`; } return; }
+    // A family on the form changed: reload the trip (only if still on this form) and redraw,
+    // which clears the picks whose family changed, so the next save isn't refused again.
+    if (e.code === "family_changed" && S.draft === d) {
+      const here = () => S.draft === d && hashPath() === `#/t/${t.id}/e/${d.id || "new"}`;
+      try { if (await loadTrip(t.id, here)) renderEditor(d.id || null); } catch {}
+    }
     return toast(e.message);
   }
   // A retry of a save that had landed: it's on the trip as first sent.
-  toast(r.already && !r.same ? "Your first save went through as it was then. Open it from the list to change it." : "Expense saved");
+  toast(r.already && !r.same ? "Your first save went through as it was then. Open it from the list to change it."
+    : S.draft === d ? "Expense saved" : `${d.description || "Expense"} saved on ${t.name}`);
   if (d.fromWait) dropWaiting(d.fromWait);
+  if (keptDraft(t.id, d.id || 0)?.client_key === d.client_key) dropDraft();   // not offered again if they come back
   if (S.draft !== d) return;            // they've moved on to something else meanwhile
   S.draft = null; dropDraft();
   location.hash = `#/t/${t.id}`;
@@ -1435,6 +1462,7 @@ async function volunteerSheet() {
   const t = S.trip.tournament, fams = S.trip.families, me = myFamily();
   const byName = fams.find(f => new RegExp(`\\b${f.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(S.name));
   const famPick = t.treasurer_name ? t.treasurer_family_id : me && me !== "none" ? me.id : byName?.id ?? null;
+  const uids = Object.fromEntries(fams.map(f => [f.id, f.uid]));   // the families as this sheet shows them
   const guessed = !t.treasurer_name && famPick ? (me && me !== "none" ? `We filled in ${esc(famName(famPick))}, the family you picked on this phone. ` : `We guessed ${esc(famName(famPick))} from your name; change it if that's wrong. `) : "";
   const v = await sheet({
     title: t.treasurer_name ? "Treasurer details" : "Be the treasurer", ok: t.treasurer_name ? "Save" : "Confirm",
@@ -1448,7 +1476,7 @@ async function volunteerSheet() {
     extra: t.treasurer_name && !final() ? `<div class="row-actions"><button type="button" class="link danger" data-sheet-act="remove">Step down as treasurer</button></div>` : "",
   });
   if (!v) return;
-  const body = v.action === "remove" ? { treasurer_name: "" } : v;
+  const body = v.action === "remove" ? { treasurer_name: "" } : { ...v, treasurer_family_uid: uids[v.treasurer_family_id] };
   await act(() => api(`/tournaments/${t.id}/treasurer`, { method: "PUT", body }), v.action === "remove" ? "Treasurer removed" : "Saved");
   refresh("treasurer");
 }
