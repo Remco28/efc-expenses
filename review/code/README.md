@@ -515,3 +515,21 @@ Reviewed 64a1243 (the outside review's fixes and plan v3). Cast as round 11: who
 | 5 | The treasurer sheet on a trip whose treasurer family was removed under the old code answers "out of date" until another family is picked; a treasurer save on a trip finalized a moment ago says "out of date" rather than "finalized" | fix auditor (LOW) | LOW: the live data was cleared, so the first can't occur; the second is visible and a reload fixes it | Read in the code | Not fixed |
 | 6 | Removing a family doesn't say it comes off every expense it was ticked on; a comment says late families share "from now on" where shares are live | whole-code Haiku (LOW) | LOW | Read in the code | To fix (wording, comment) |
 | 7 | Shortening and lengthening a trip doesn't bring fencing days back; a waiting expense refused after finalize is seen only on its payer's phone | rules, whole-code Sonnet, bad-signal (LOW) | not findings | — | Chosen on purpose (warned; saving design v4) |
+
+### The disposition audit of round 12, and our response
+
+Report: round12/disposition-auditor-sonnet.md. Accepted:
+
+| Row | Was | Now | Why |
+|---|---|---|---|
+| 5b (a treasurer save on a trip finalized a moment ago says "out of date", not "finalized") | LOW, not fixed, "visible, a reload fixes it" | LOW, fixed | A wording regression from the outside-review fixes; "visible" was the banned reason. Fixed with the treasurer change (plan v2, item 1) |
+| 5a (the treasurer sheet on a trip whose treasurer family was removed under the old code) | LOW, "can't occur" | LOW, checked | The live database was queried (2026-10-24): one trip has a treasurer family, and it exists. It can't occur now |
+| new: a save walked away from, then refused, loses the typed expense to a brief message | not rated | MEDIUM | The same mechanism as round 10 row 4 and round 12 row 2 (typed work lost after a save that couldn't land); raised in the fix auditor's report and dropped from the table |
+| new: a treasurer change on a trip finalized just before Save is silently ignored ("Saved") | not rated | MEDIUM | The mirror of row 1 (the server guessing intent from a stale status read), found by the auditor in the code |
+| 7 (shortening and lengthening doesn't bring fencing days back; a waiting expense refused after finalize is seen only on its payer's phone) | "not findings" | LOW, not fixed | Rated, not removed: the first is warned at the shortening (from the rules reader and Haiku whole-code, not as credited); the second is saving design v4's accepted limit (Sonnet whole-code, bad-signal) |
+
+Also accepted: the bad-signal reader only read code and didn't cover edits, family adds or receipt cleanup, so "no HIGH" is thinner than the table made it look; reader observations dropped without a row (a family removal bumps an open editor's revision, the part of row 2's mechanism now handled by plan v2) should have been listed.
+
+Not given rows, and why: a refused waiting item is lost if the phone's storage is cleared, and a deleted-then-resent item comes back (both accepted limits of saving design v4).
+
+**So round 12 had no HIGH, four MEDIUM (rows 1, 2 and the two above), and its MEDIUM fixes mean a round 13 follows.**
